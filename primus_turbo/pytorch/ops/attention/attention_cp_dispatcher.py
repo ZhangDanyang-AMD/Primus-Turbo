@@ -58,27 +58,27 @@ def dispatch_attention_cp_functions(
                 )
             elif quant_type == "mxfp8":
                 return AttentionTritonMXFP8FunctionCPA2A.apply(
-                    q=q,
-                    k=k,
-                    v=v,
-                    dropout_p=dropout_p,
-                    softmax_scale=softmax_scale,
-                    causal=causal,
-                    window_size=window_size,
-                    bias=bias,
-                    alibi_slopes=alibi_slopes,
-                    return_lse=return_lse,
-                    return_softmax=return_attn_probs,
-                    is_grad=is_grad_enabled,
-                    use_mxfp8=True,
-                    cp_group=cp_group,
-                    block_m_fwd=block_m_fwd,
-                    block_n_fwd=block_n_fwd,
-                    block_m_dq_bwd=block_m_dq_bwd,
-                    block_n_dq_bwd=block_n_dq_bwd,
-                    block_m_dkv_bwd=block_m_dkv_bwd,
-                    block_n_dkv_bwd=block_n_dkv_bwd,
-                    quant_block_size=quant_block_size
+                    q,
+                    k,
+                    v,
+                    dropout_p,
+                    softmax_scale,
+                    causal,
+                    window_size,
+                    bias,
+                    alibi_slopes,
+                    return_lse,
+                    return_attn_probs,
+                    is_grad_enabled,
+                    True,
+                    cp_group,
+                    block_m_fwd,
+                    block_n_fwd,
+                    block_m_dq_bwd,
+                    block_n_dq_bwd,
+                    block_m_dkv_bwd,
+                    block_n_dkv_bwd,
+                    quant_block_size
                 )
             else:
                 raise NotImplementedError(

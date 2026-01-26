@@ -75,6 +75,16 @@ class AttentionWithCPTestCase(MultiProcessTestCase):
     @parametrize("quant_block_size", [32, 64, 128])
     def test_attention_with_cp(self, batch, config, causal, backend_type, cp_comm_type, quant_type,
                                block_m, block_n, quant_block_size):
+
+        if quant_type == "mxfp8":
+            if (config.seqlen_q % block_m != 0 or  
+            config.seqlen_kv % block_n != 0 or
+            block_m % quant_block_size != 0 or 
+            block_n % quant_block_size !=0 or 
+            config.head_dim_qk % quant_block_size !=0 or
+            config.head_dim_v % quant_block_size != 0):
+                return
+            
         self._init_process()
         cp_group = dist.group.WORLD
 

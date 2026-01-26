@@ -12,9 +12,7 @@ import torch
 from primus_turbo.pytorch.kernels.attention.attention_triton_impl import (
     get_f8_fwd_dtype,
 )
-from primus_turbo.pytorch.kernels.quantize import(
-    convert_to_mxfp8
-)
+from primus_turbo.pytorch.kernels.quantize import convert_to_mxfp8
 from primus_turbo.triton.attention.attention_kernel import FIXED_BLOCK_M
 
 
@@ -53,6 +51,7 @@ def block_scaling_node(tensor, use_fp8, BLOCK_M=FIXED_BLOCK_M, float8_dtype=get_
     else:
         scale = torch.tensor([1.0], device=tensor.device)
         return tensor, scale
+
 
 def block_scaling_node_mxfp8(
     tensor,
@@ -100,8 +99,6 @@ def block_scaling_node_mxfp8(
             assert L <= max_seqlen, f"sequence length {L} exceeds max_seqlen {max_seqlen}"
             tensor_bhsd[b, :, :L, :] = tensor[s:e].transpose(0, 1)
 
-        S = padded_max_seqlen
-
     else:
         raise AssertionError(f"Got unsupported layout: {layout}")
 
@@ -142,6 +139,7 @@ def block_scaling_node_mxfp8(
 
     return quanted_bhsd, scale_bhsd
 
+
 def quant_p_scale_mxfp8():
     mxfp8_fw = get_f8_fwd_dtype()
     p_scale = torch.finfo(mxfp8_fw).max
@@ -157,11 +155,12 @@ def quant_p_scale_mxfp8():
         s_bias = 15
 
     hp_ebias = 127
-    
-    p_scale = torch.bitwise_right_shift(torch.tensor(p_scale).to(mxfp8_fw).view(torch.uint8), mbits)& mask_s
-    p_scale = (p_scale-s_bias+hp_ebias).to(torch.uint32).item()
+
+    p_scale = torch.bitwise_right_shift(torch.tensor(p_scale).to(mxfp8_fw).view(torch.uint8), mbits) & mask_s
+    p_scale = (p_scale - s_bias + hp_ebias).to(torch.uint32).item()
     return p_scale
-    
+
+
 def quant_v_get_p_scale(v, use_fp8: bool):
     """
     Get p_scale for quant_v_getp_scale

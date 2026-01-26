@@ -151,6 +151,7 @@ def test_attention_fp8_blockwise(batch, config, causal, backend_type):
     assert key_grad_snr > 15, "key_grad_snr too low"
     assert value_grad_snr > 15, "value_grad_snr too low"
 
+
 @pytest.mark.parametrize("batch", [4])
 @pytest.mark.parametrize("config", test_cases)
 @pytest.mark.parametrize("causal", [True, False])
@@ -159,14 +160,16 @@ def test_attention_fp8_blockwise(batch, config, causal, backend_type):
 @pytest.mark.parametrize("block_n", [32, 64, 128])
 @pytest.mark.parametrize("quant_block_size", [32, 64, 128])
 def test_attention_mxfp8(batch, config, causal, backend_type, block_m, block_n, quant_block_size):
-    if (config.seqlen_q % block_m != 0 or  
-    config.seqlen_kv % block_n != 0 or
-    block_m % quant_block_size != 0 or 
-    block_n % quant_block_size !=0 or 
-    config.head_dim_qk % quant_block_size !=0 or
-    config.head_dim_v % quant_block_size != 0):
+    if (
+        config.seqlen_q % block_m != 0
+        or config.seqlen_kv % block_n != 0
+        or block_m % quant_block_size != 0
+        or block_n % quant_block_size != 0
+        or config.head_dim_qk % quant_block_size != 0
+        or config.head_dim_v % quant_block_size != 0
+    ):
         return
-    
+
     device = "cuda"
     torch.manual_seed(1234)
     dtype = torch.bfloat16

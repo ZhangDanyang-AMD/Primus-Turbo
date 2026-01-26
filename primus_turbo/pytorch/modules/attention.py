@@ -4,7 +4,7 @@
 # See LICENSE for license information.
 ###############################################################################
 
-from typing import Optional, Literal
+from typing import Literal, Optional
 
 import torch
 
@@ -26,18 +26,20 @@ class TurboAttention(torch.nn.Module):
         return_attn_probs=False,
         backend_type: str = "ck",  # 'ck', 'triton'
         # following parameters will be used in mxfp8
-        quant_type : Optional[Literal["fp8_blockwise", "mxfp8"]] = None, # "fp8", "mxfp8"
+        quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]] = None,  # "fp8", "mxfp8"
         block_m_fwd: int = 64,  # block of query seq len in fwd
         block_n_fwd: int = 64,  # block of key/value seq len in fwd
         block_m_dq_bwd: int = 64,  # block of dq seq len in bwd
         block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
         block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
         block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
-        quant_block_size: int = 32
+        quant_block_size: int = 32,
     ):
         super().__init__()
 
-        assert not (quant_type is not None and backend_type == "ck"), "When quant_type is not None, attention_type cannot be 'ck'."
+        assert not (
+            quant_type is not None and backend_type == "ck"
+        ), "When quant_type is not None, attention_type cannot be 'ck'."
 
         self.dropout_p = dropout_p
         self.softmax_scale = softmax_scale
@@ -50,13 +52,13 @@ class TurboAttention(torch.nn.Module):
         self.backend_type = backend_type
         # following parameters will be used in mxfp8
         self.quant_type = quant_type
-        self.block_m_fwd=block_m_fwd
-        self.block_n_fwd=block_n_fwd
-        self.block_m_dq_bwd=block_m_dq_bwd
-        self.block_n_dq_bwd=block_n_dq_bwd
-        self.block_m_dkv_bwd=block_m_dkv_bwd
-        self.block_n_dkv_bwd=block_n_dkv_bwd
-        self.quant_block_size=quant_block_size
+        self.block_m_fwd = block_m_fwd
+        self.block_n_fwd = block_n_fwd
+        self.block_m_dq_bwd = block_m_dq_bwd
+        self.block_n_dq_bwd = block_n_dq_bwd
+        self.block_m_dkv_bwd = block_m_dkv_bwd
+        self.block_n_dkv_bwd = block_n_dkv_bwd
+        self.quant_block_size = quant_block_size
 
         if backend_type == "ck" and quant_type is None:
             self.attention_fn = attention
@@ -73,7 +75,7 @@ class TurboAttention(torch.nn.Module):
         bias: Optional[torch.Tensor] = None,
     ):
         if self.quant_type is not None:
-            kwargs = {        
+            kwargs = {
                 "quant_type": self.quant_type,
                 "block_m_fwd": self.block_m_fwd,
                 "block_n_fwd": self.block_n_fwd,
@@ -85,7 +87,7 @@ class TurboAttention(torch.nn.Module):
             }
         else:
             kwargs = {}
-            
+
         return self.attention_fn(
             q,
             k,
@@ -100,5 +102,5 @@ class TurboAttention(torch.nn.Module):
             return_lse=self.return_lse,
             return_attn_probs=self.return_attn_probs,
             backend_type=self.backend_type,
-            **kwargs
+            **kwargs,
         )

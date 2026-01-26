@@ -4,6 +4,8 @@
 # See LICENSE for license information.
 ###############################################################################
 
+from typing import Literal, Optional
+
 import torch
 import torch.utils.benchmark as benchmark
 from flash_attn import flash_attn_func
@@ -14,7 +16,6 @@ from tests.pytorch.ref.attention_ref import (
     attention_vanilla_forward_pytorch_ref_impl,
 )
 from tests.test_utils import compute_snr
-from typing import Literal, Optional
 
 test_cases_turbo = [
     AttnConfig(seqlen_q=4096, seqlen_kv=4096, num_head_q=32, num_head_kv=32, head_dim_qk=128, head_dim_v=128),
@@ -39,15 +40,17 @@ test_cases_flash_attn = [
 ]
 
 
-def bench_turbo_attention(batch, 
-                        config, 
-                        causal: bool, 
-                        backend_type: str, 
-                        quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]], 
-                        test_backward: bool,
-                        block_m: int = 64, 
-                        block_n: int = 64, 
-                        quant_block_size: int = 32):
+def bench_turbo_attention(
+    batch,
+    config,
+    causal: bool,
+    backend_type: str,
+    quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]],
+    test_backward: bool,
+    block_m: int = 64,
+    block_n: int = 64,
+    quant_block_size: int = 32,
+):
     device = "cuda"
     dtype = torch.bfloat16
     seqlen_q, seqlen_kv, num_head_q, num_head_kv, head_dim_qk, head_dim_v = (
@@ -170,15 +173,17 @@ def bench_turbo_attention(batch,
     return mean_time_ms, flops_per_sec, total_flops
 
 
-def bench_flash_attention(batch, 
-                          config, 
-                          causal: bool, 
-                          backend_type: str, 
-                          quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]], 
-                          test_backward: bool,
-                          block_m: int = 64, 
-                          block_n: int = 64, 
-                          quant_block_size: int = 32):
+def bench_flash_attention(
+    batch,
+    config,
+    causal: bool,
+    backend_type: str,
+    quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]],
+    test_backward: bool,
+    block_m: int = 64,
+    block_n: int = 64,
+    quant_block_size: int = 32,
+):
     device = "cuda"
     dtype = torch.bfloat16
     seqlen_q, seqlen_kv, num_head_q, num_head_kv, head_dim_qk, head_dim_v = (
@@ -342,32 +347,222 @@ if __name__ == "__main__":
 
     # Define test configurations
     test_configs_turbo = [
-        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        
-        {"causal": False, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": False, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 32},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 32},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 32},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 32},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 64},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 64},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 64},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 64},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 128, "block_n": 128, "quant_block_size": 64},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 128, "block_n": 128, "quant_block_size": 64},
-        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 128, "block_n": 128, "quant_block_size": 64},
-        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 128, "block_n": 128, "quant_block_size": 64},
+        {
+            "causal": False,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "fp8_blockwise",
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "fp8_blockwise",
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "fp8_blockwise",
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "fp8_blockwise",
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 64,
+            "block_n": 64,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 128,
+            "block_n": 128,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": False,
+            "block_m": 128,
+            "block_n": 128,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": False,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 128,
+            "block_n": 128,
+            "quant_block_size": 64,
+        },
+        {
+            "causal": True,
+            "backend": "triton",
+            "quant_type": "mxfp8",
+            "test_backward": True,
+            "block_m": 128,
+            "block_n": 128,
+            "quant_block_size": 64,
+        },
     ]
     # Run benchmarks with bench_turbo_attention
     aiter_results = run_benchmark(bench_turbo_attention, test_cases_turbo, test_configs_turbo)
@@ -377,10 +572,42 @@ if __name__ == "__main__":
     print("AITer results saved to aiter_attention_benchmark_results.csv")
 
     test_configs_flash_attn = [
-        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
-        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {
+            "causal": False,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": False,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": False,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
+        {
+            "causal": True,
+            "backend": "ck",
+            "quant_type": None,
+            "test_backward": True,
+            "block_m": 32,
+            "block_n": 32,
+            "quant_block_size": 32,
+        },
     ]
     # Run benchmarks with bench_flash_attention
     flash_results = run_benchmark(bench_flash_attention, test_cases_flash_attn, test_configs_flash_attn)

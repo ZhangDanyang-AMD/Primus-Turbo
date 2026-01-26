@@ -7,6 +7,7 @@
 import triton
 import triton.language as tl
 
+
 @triton.jit
 def _calculate_scales(
     x,
@@ -14,9 +15,9 @@ def _calculate_scales(
     BLOCK_N: tl.constexpr,
     QUANT_BLOCK_SIZE: tl.constexpr,
     IS_2D_BLOCK: tl.constexpr = False,
-    float8_dtype: tl.constexpr = tl.float8e4nv
+    float8_dtype: tl.constexpr = tl.float8e4nv,
 ):
-    E8M0_EXPONENT_BIAS : tl.constexpr = 127
+    E8M0_EXPONENT_BIAS: tl.constexpr = 127
 
     if IS_2D_BLOCK:
         tl.static_assert(BLOCK_M % QUANT_BLOCK_SIZE == 0, "block m must be divided by QUANT_BLOCK_SIZE")
@@ -32,9 +33,9 @@ def _calculate_scales(
         hp_mbits = 7
         hp_ebits = 8
         hp_exp_bias = 127
-    
+
     sbits = 1
-    if float8_dtype == tl.float8e4nv: 
+    if float8_dtype == tl.float8e4nv:
         mbits = 3
         target_max_pow2 = 8
     elif float8_dtype == tl.float8e5:
@@ -44,8 +45,7 @@ def _calculate_scales(
     NEW_BLOCK_N: tl.constexpr = BLOCK_N // QUANT_BLOCK_SIZE
     if IS_2D_BLOCK:
         NEW_BLOCK_M: tl.constexpr = BLOCK_M // QUANT_BLOCK_SIZE
-        x = x.reshape(NEW_BLOCK_M, QUANT_BLOCK_SIZE, NEW_BLOCK_N,
-                      QUANT_BLOCK_SIZE)
+        x = x.reshape(NEW_BLOCK_M, QUANT_BLOCK_SIZE, NEW_BLOCK_N, QUANT_BLOCK_SIZE)
         x = tl.permute(x, (0, 2, 1, 3))
         max_abs = tl.max(tl.abs(x), axis=-1)
         max_abs = tl.max(max_abs, axis=-1)
@@ -54,20 +54,23 @@ def _calculate_scales(
         max_abs = tl.max(tl.abs(x), axis=-1)
     max_abs = max_abs.to(x.type.element_ty)
 
-    # round even (adaptive) 
+    # round even (adaptive)
     # https://github.com/pytorch/ao/blob/a5f2693089b4c6528f019a0fb17235c9f22180a9/torchao/prototype/mx_formats/mx_tensor.py#L148
     max_abs = max_abs.to(hp_int_dtype, bitcast=True)
     val_to_add = 1 << (hp_mbits - mbits - 1)
     mask = ((1 << (hp_ebits + sbits)) - 1) << hp_mbits
-    max_abs = ((max_abs + val_to_add) & mask) 
-    
-    extracted_pow2 = ((max_abs>>hp_mbits) & 0b11111111) - hp_exp_bias
+    max_abs = (max_abs + val_to_add) & mask
+
+    extracted_pow2 = ((max_abs >> hp_mbits) & 0b11111111) - hp_exp_bias
     scale_e8m0_unbiased = extracted_pow2 - target_max_pow2
 
-    scale_e8m0_unbiased = tl.minimum(tl.maximum(scale_e8m0_unbiased, -1 * E8M0_EXPONENT_BIAS), E8M0_EXPONENT_BIAS+1)
+    scale_e8m0_unbiased = tl.minimum(
+        tl.maximum(scale_e8m0_unbiased, -1 * E8M0_EXPONENT_BIAS), E8M0_EXPONENT_BIAS + 1
+    )
     scale_e8m0_biased = scale_e8m0_unbiased + E8M0_EXPONENT_BIAS
-    
+
     return scale_e8m0_biased.to(tl.uint8)
+
 
 @triton.jit
 def _generate_randval(m, n, philox_seed, philox_offset):
@@ -90,13 +93,13 @@ def _pack_fp8(
     IS_2D_BLOCK: tl.constexpr = False,
     USE_SR: tl.constexpr = False,
     USE_ASM: tl.constexpr = False,
-    float8_dtype: tl.constexpr = tl.float8e4nv
+    float8_dtype: tl.constexpr = tl.float8e4nv,
 ):
     if float8_dtype == tl.float8e4nv:
-        max_pos : tl.constexpr = (448.0)
+        max_pos: tl.constexpr = 448.0
     else:
-        max_pos : tl.constexpr = (57344.0)
-        
+        max_pos: tl.constexpr = 57344.0
+
     HALF_BLOCK_N: tl.constexpr = BLOCK_N // 2
     HALF_QUANT_BLOCK_SIZE: tl.constexpr = QUANT_BLOCK_SIZE // 2
     SCALE_BLOCK_M: tl.constexpr = BLOCK_M // QUANT_BLOCK_SIZE
@@ -105,21 +108,25 @@ def _pack_fp8(
 
     scales = tl.where(scales < 1, 1, scales)
     scales_fp32 = (scales.to(tl.uint32) << 23).to(tl.float32, bitcast=True)
-    F32_MIN_NORMAL = tl.constexpr(2 ** -126)  
+    F32_MIN_NORMAL = tl.constexpr(2**-126)
     min_frag = (F32_MIN_NORMAL).to(tl.float32)
     scales_fp32 = tl.where(scales_fp32 < min_frag, min_frag, scales_fp32)
 
     if IS_2D_BLOCK:
         # scales_fp32: [SCALE_BLOCK_M, SCALE_BLOCK_N]
-        scales_fp32 = scales_fp32.expand_dims(axis=(1,3)).broadcast_to(
-            SCALE_BLOCK_M, QUANT_BLOCK_SIZE, SCALE_BLOCK_N,
-            HALF_QUANT_BLOCK_SIZE).reshape(BLOCK_M, HALF_BLOCK_N)
+        scales_fp32 = (
+            scales_fp32.expand_dims(axis=(1, 3))
+            .broadcast_to(SCALE_BLOCK_M, QUANT_BLOCK_SIZE, SCALE_BLOCK_N, HALF_QUANT_BLOCK_SIZE)
+            .reshape(BLOCK_M, HALF_BLOCK_N)
+        )
     else:
         # scales_fp32: [BLOCK_M, SCALE_BLOCK_N]
-        scales_fp32 = scales_fp32.expand_dims(axis=2).broadcast_to(
-            BLOCK_M, SCALE_BLOCK_N,
-            HALF_QUANT_BLOCK_SIZE).reshape(BLOCK_M, HALF_BLOCK_N)
-        
+        scales_fp32 = (
+            scales_fp32.expand_dims(axis=2)
+            .broadcast_to(BLOCK_M, SCALE_BLOCK_N, HALF_QUANT_BLOCK_SIZE)
+            .reshape(BLOCK_M, HALF_BLOCK_N)
+        )
+
     if USE_SR:
         randval0 = _generate_randval(BLOCK_M, BLOCK_N, philox_seed, philox_offset)
     else:
@@ -140,8 +147,7 @@ def _pack_fp8(
                     pack=1,
                 )
             else:
-                x0 = (x1.to(tl.uint32, bitcast=True).to(tl.uint64) <<
-                      32) | x0.to(tl.uint32, bitcast=True)
+                x0 = (x1.to(tl.uint32, bitcast=True).to(tl.uint64) << 32) | x0.to(tl.uint32, bitcast=True)
                 y = tl.inline_asm_elementwise(
                     asm="""
                     v_cvt_scalef32_sr_pk_fp8_f32 $0, $1, $2, $3 op_sel:[0,0,0,0];
@@ -154,8 +160,7 @@ def _pack_fp8(
                 )
         else:
             if not USE_SR:
-                x0 = (x1.to(tl.uint16, bitcast=True).to(tl.uint32) << 16) | x0.to(
-                    tl.uint16, bitcast=True)
+                x0 = (x1.to(tl.uint16, bitcast=True).to(tl.uint32) << 16) | x0.to(tl.uint16, bitcast=True)
                 y = tl.inline_asm_elementwise(
                     asm="""
                     v_cvt_scalef32_pk_fp8_bf16 $0, $1, $2 op_sel:[0,0,0,0];
@@ -168,7 +173,11 @@ def _pack_fp8(
                 )
             else:
                 scales_uint8 = scales.to(tl.uint8)
-                scales_fp32 = scales_fp32.expand_dims(axis=2).broadcast_to(BLOCK_M, HALF_BLOCK_N, 2).reshape(BLOCK_M, BLOCK_N)
+                scales_fp32 = (
+                    scales_fp32.expand_dims(axis=2)
+                    .broadcast_to(BLOCK_M, HALF_BLOCK_N, 2)
+                    .reshape(BLOCK_M, BLOCK_N)
+                )
                 y = tl.inline_asm_elementwise(
                     asm="""
                     v_cvt_scalef32_sr_fp8_bf16 $0, $1, $2, $3 op_sel:[0,0,0,0];
@@ -180,21 +189,23 @@ def _pack_fp8(
                     pack=1,
                 )
 
-        if x0.type.element_ty == tl.float32 or not USE_SR: 
+        if x0.type.element_ty == tl.float32 or not USE_SR:
             y1 = (y >> 8).to(tl.uint8).to(float8_dtype, bitcast=True)
             y0 = (y & 0x00FF).to(tl.uint8).to(float8_dtype, bitcast=True)
             y = tl.join(y0, y1).reshape(BLOCK_M, BLOCK_N)
         y = y.to(tl.float32)
         mask_pos = (y != y) & (x > 0)
         mask_neg = (y != y) & (x < 0)
-        y = tl.where(mask_neg, -max_pos, y) 
-        y = tl.where(mask_pos, max_pos, y) 
-        y=y.to(float8_dtype)
+        y = tl.where(mask_neg, -max_pos, y)
+        y = tl.where(mask_pos, max_pos, y)
+        y = y.to(float8_dtype)
     else:
         # Manual FP8 conversion with scale and optional stochastic rounding
         # Divide by scale first
-        x_scaled = x / scales_fp32.expand_dims(axis=2).broadcast_to(BLOCK_M, HALF_BLOCK_N, 2).reshape(BLOCK_M, BLOCK_N)
-        
+        x_scaled = x / scales_fp32.expand_dims(axis=2).broadcast_to(BLOCK_M, HALF_BLOCK_N, 2).reshape(
+            BLOCK_M, BLOCK_N
+        )
+
         if USE_SR:
             # Add stochastic rounding noise before conversion
             # randval0 is in range [0, 2^32), normalize to [0, 1)
@@ -202,7 +213,7 @@ def _pack_fp8(
             # Scale noise to FP8 LSB (depends on the exponent)
             # For simplicity, add small uniform noise
             x_scaled = x_scaled + (noise - 0.5) * 0.01
-        
+
         y = x_scaled.to(float8_dtype)
 
     return y.reshape(BLOCK_M, BLOCK_N)
@@ -217,7 +228,7 @@ def _unpack_fp8(
     BLOCK_N: tl.constexpr,
     QUANT_BLOCK_SIZE: tl.constexpr,
     IS_2D_BLOCK: tl.constexpr,
-    USE_ASM: tl.constexpr = False
+    USE_ASM: tl.constexpr = False,
 ):
     HALF_BLOCK_N: tl.constexpr = BLOCK_N // 2
     HALF_QUANT_BLOCK_SIZE: tl.constexpr = QUANT_BLOCK_SIZE // 2
@@ -229,19 +240,22 @@ def _unpack_fp8(
     scales_fp32 = (scales.to(tl.uint32) << 23).to(tl.float32, bitcast=True)
     if IS_2D_BLOCK:
         # scales_fp32: [SCALE_BLOCK_M, SCALE_BLOCK_N]
-        scales_fp32 = scales_fp32.expand_dims(axis=(1,3)).broadcast_to(
-            SCALE_BLOCK_M, QUANT_BLOCK_SIZE, SCALE_BLOCK_N,
-            HALF_QUANT_BLOCK_SIZE).reshape(BLOCK_M, HALF_BLOCK_N)
+        scales_fp32 = (
+            scales_fp32.expand_dims(axis=(1, 3))
+            .broadcast_to(SCALE_BLOCK_M, QUANT_BLOCK_SIZE, SCALE_BLOCK_N, HALF_QUANT_BLOCK_SIZE)
+            .reshape(BLOCK_M, HALF_BLOCK_N)
+        )
     else:
         # scales_fp32: [BLOCK_M, SCALE_BLOCK_N]
-        scales_fp32 = scales_fp32.expand_dims(axis=2).broadcast_to(
-            BLOCK_M, SCALE_BLOCK_N,
-            HALF_QUANT_BLOCK_SIZE).reshape(BLOCK_M, HALF_BLOCK_N)
+        scales_fp32 = (
+            scales_fp32.expand_dims(axis=2)
+            .broadcast_to(BLOCK_M, SCALE_BLOCK_N, HALF_QUANT_BLOCK_SIZE)
+            .reshape(BLOCK_M, HALF_BLOCK_N)
+        )
 
     if USE_ASM:
         tl.static_assert(x.type.element_ty == tl.float8e4nv)
-        x0 = (x1.to(tl.uint8, bitcast=True).to(tl.uint16) <<
-                8) | x0.to(tl.uint8, bitcast=True)
+        x0 = (x1.to(tl.uint8, bitcast=True).to(tl.uint16) << 8) | x0.to(tl.uint8, bitcast=True)
         if output_dtype == tl.float32:
             y_packed = tl.inline_asm_elementwise(
                 asm="""
@@ -254,8 +268,7 @@ def _unpack_fp8(
                 pack=1,
             )
             y1 = (y_packed >> 32).to(tl.uint32).to(tl.float32, bitcast=True)
-            y0 = (y_packed & 0x00000000FFFFFFFF).to(tl.uint32).to(tl.float32,
-                                                                bitcast=True)
+            y0 = (y_packed & 0x00000000FFFFFFFF).to(tl.uint32).to(tl.float32, bitcast=True)
         else:
             y_packed = tl.inline_asm_elementwise(
                 asm="""
@@ -268,12 +281,13 @@ def _unpack_fp8(
                 pack=1,
             )
             y1 = (y_packed >> 16).to(tl.uint16).to(tl.bfloat16, bitcast=True)
-            y0 = (y_packed & 0x0000FFFF).to(tl.uint16).to(tl.bfloat16,
-                                                        bitcast=True)
+            y0 = (y_packed & 0x0000FFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True)
         y = tl.join(y0, y1).reshape(BLOCK_M, BLOCK_N)
     else:
         y = x.to(output_dtype)
-        y = y*scales_fp32.expand_dims(axis=2).broadcast_to(BLOCK_M, HALF_BLOCK_N, 2).reshape(BLOCK_M, BLOCK_N)
+        y = y * scales_fp32.expand_dims(axis=2).broadcast_to(BLOCK_M, HALF_BLOCK_N, 2).reshape(
+            BLOCK_M, BLOCK_N
+        )
 
     return y
 
@@ -296,7 +310,7 @@ def _convert_to_mxfp8_kernel(
     QUANT_BLOCK_SIZE: tl.constexpr,
     IS_2D_BLOCK: tl.constexpr,
     USE_SR: tl.constexpr,
-    USE_ASM: tl.constexpr
+    USE_ASM: tl.constexpr,
 ):
     """
     Quantizes the input tensor `x_ptr` and stores the result in `y_ptr` and the scaling factor in `s_ptr`.
@@ -326,9 +340,8 @@ def _convert_to_mxfp8_kernel(
     offs_x = offs_m[:, None] * stride_xm + offs_xn[None, :] * stride_xn
     offs_s = offs_sm[:, None] * stride_sm + offs_sn[None, :] * stride_sn
 
-    tl.static_assert(x_ptr.type.element_ty == tl.float32
-                     or x_ptr.type.element_ty == tl.bfloat16)
-    
+    tl.static_assert(x_ptr.type.element_ty == tl.float32 or x_ptr.type.element_ty == tl.bfloat16)
+
     float8_dtype = y_ptr.type.element_ty
     tl.static_assert(float8_dtype == tl.float8e4nv or float8_dtype == tl.float8e5)
 
@@ -340,7 +353,7 @@ def _convert_to_mxfp8_kernel(
         BLOCK_N=BLOCK_N,
         QUANT_BLOCK_SIZE=QUANT_BLOCK_SIZE,
         IS_2D_BLOCK=IS_2D_BLOCK,
-        float8_dtype=float8_dtype
+        float8_dtype=float8_dtype,
     )
     y = _pack_fp8(
         x,
@@ -353,7 +366,7 @@ def _convert_to_mxfp8_kernel(
         IS_2D_BLOCK=IS_2D_BLOCK,
         USE_SR=USE_SR,
         USE_ASM=USE_ASM,
-        float8_dtype=float8_dtype
+        float8_dtype=float8_dtype,
     )
 
     offs_y = offs_m[:, None] * stride_ym + offs_yn[None, :] * stride_yn
@@ -410,8 +423,7 @@ def _convert_from_mxfp8_kernel(
     x = tl.load(x_ptr + offs_x)
     s = tl.load(s_ptr + offs_s)
 
-    tl.static_assert(y_ptr.type.element_ty == tl.float32
-                     or y_ptr.type.element_ty == tl.bfloat16)
+    tl.static_assert(y_ptr.type.element_ty == tl.float32 or y_ptr.type.element_ty == tl.bfloat16)
     tl.static_assert(x_ptr.type.element_ty == tl.float8e4nv or x_ptr.type.element_ty == tl.float8e5)
 
     y = _unpack_fp8(
@@ -426,4 +438,3 @@ def _convert_from_mxfp8_kernel(
     )
     offs_y = offs_m[:, None] * stride_ym + offs_yn[None, :] * stride_yn
     tl.store(y_ptr + offs_y, y)
-

@@ -33,11 +33,11 @@ from primus_turbo.triton.attention.attention_kernel import (
     philox_offset,
     philox_seed,
 )
-from primus_turbo.triton.attention.mxfp8_attention_kernel import(
+from primus_turbo.triton.attention.mxfp8_attention_kernel import (
     _bwd_kernel_dkdv_mxfp8,
     _bwd_kernel_dq_mxfp8,
     _bwd_preprocess_use_o_mxfp8,
-    attn_fwd_mxfp8
+    attn_fwd_mxfp8,
 )
 
 fwd_torch_dtype: tl.constexpr = torch.bfloat16
@@ -760,7 +760,7 @@ def attention_mxfp8_forward_triton_impl(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
-    p_scale: int,       # p_scale = 127 if not quantize p
+    p_scale: int,  # p_scale = 127 if not quantize p
     sm_scale: float,
     alibi_slopes: Optional[torch.Tensor],
     causal: bool,
@@ -784,7 +784,7 @@ def attention_mxfp8_forward_triton_impl(
     assert v.is_contiguous()
     assert q_scale.is_contiguous()
     assert k_scale.is_contiguous()
-    
+
     layout = "bshd"
     cu_seqlens_q = 0
     cu_seqlens_k = 0
@@ -830,17 +830,17 @@ def attention_mxfp8_forward_triton_impl(
     is_varlen = layout == "thd"
 
     # NOTE: a large bias tensor leads to overflow during pointer arithmetic
-    if (bias is not None):
-        assert (bias.numel() < 2**31)
+    if bias is not None:
+        assert bias.numel() < 2**31
 
     batch, nheads_q, nheads_k, head_size_qk, head_size_v, seqlen_q, seqlen_k = get_shape_from_layout(
-        q, k, v, layout, cu_seqlens_q, cu_seqlens_k, max_seqlens_q,
-        max_seqlens_k)
+        q, k, v, layout, cu_seqlens_q, cu_seqlens_k, max_seqlens_q, max_seqlens_k
+    )
 
     assert quant_block_size % quant_size == 0, "quant block must be divided by quant size"
     assert block_m % quant_block_size == 0, "block M in fwd must be divided by quant size"
     assert block_n % quant_block_size == 0, "block N in fwd must be divided by quant size"
-    
+
     q_strides = get_strides_from_layout(q, layout)
     k_strides = get_strides_from_layout(k, layout)
     v_strides = get_strides_from_layout(v, layout)
@@ -855,15 +855,13 @@ def attention_mxfp8_forward_triton_impl(
     grid = (triton.cdiv(max_seqlens_q, block_m), nheads_q, batch)
 
     if return_scores:
-        scores = torch.zeros((batch, nheads_q, max_seqlens_q, max_seqlens_k),
-                             device=q.device,
-                             dtype=torch.float32)
+        scores = torch.zeros(
+            (batch, nheads_q, max_seqlens_q, max_seqlens_k), device=q.device, dtype=torch.float32
+        )
         scores_scaled_shifted = torch.zeros(
-            (batch, nheads_q, max_seqlens_q, max_seqlens_k),
-            device=q.device,
-            dtype=torch.float32)
-        scores_strides = (scores.stride(0), scores.stride(1), scores.stride(2),
-                          scores.stride(3))
+            (batch, nheads_q, max_seqlens_q, max_seqlens_k), device=q.device, dtype=torch.float32
+        )
+        scores_strides = (scores.stride(0), scores.stride(1), scores.stride(2), scores.stride(3))
     else:
         scores = torch.empty([], device=q.device, dtype=torch.float32)
         scores_scaled_shifted = None
@@ -875,28 +873,22 @@ def attention_mxfp8_forward_triton_impl(
     # only.  This return holds no useful output aside from debugging.
     if return_scores:
         exp_scores = torch.zeros(
-            (batch, nheads_q, max_seqlens_q, max_seqlens_k),
-            device=q.device,
-            dtype=torch.float32)
+            (batch, nheads_q, max_seqlens_q, max_seqlens_k), device=q.device, dtype=torch.float32
+        )
     else:
         exp_scores = torch.empty([], device=q.device, dtype=torch.float32)
 
     # stores LSE the log of the normalization constant / sum of expoential score(unnormalzied probablities)
     if is_varlen:
-        softmax_lse = torch.empty((q.shape[0], nheads_q),
-                                  device=q.device,
-                                  dtype=torch.float32)
+        softmax_lse = torch.empty((q.shape[0], nheads_q), device=q.device, dtype=torch.float32)
         stride_lse_m, stride_lse_h = softmax_lse.stride()
         stride_lse_z = 0
     else:
-        softmax_lse = torch.empty((batch, nheads_q, max_seqlens_q),
-                                  device=q.device,
-                                  dtype=torch.float32)
+        softmax_lse = torch.empty((batch, nheads_q, max_seqlens_q), device=q.device, dtype=torch.float32)
         stride_lse_z, stride_lse_h, stride_lse_m = softmax_lse.stride()
 
     if bias is not None:
-        bias_strides = (bias.stride(0), bias.stride(1), bias.stride(2),
-                        bias.stride(3))
+        bias_strides = (bias.stride(0), bias.stride(1), bias.stride(2), bias.stride(3))
     else:
         bias_strides = (0, 0, 0, 0)
 
@@ -906,9 +898,15 @@ def attention_mxfp8_forward_triton_impl(
         alibi_strides = (0, 0)
 
     if use_mxfp8:
-        stride_qdescale_z, stride_qdescale_h, stride_qdescale_m, stride_qdescale_d = get_strides_from_layout(q_scale, layout)
-        stride_kdescale_z, stride_kdescale_h, stride_kdescale_m, stride_kdescale_d = get_strides_from_layout(k_scale, layout)
-        stride_vdescale_z, stride_vdescale_h, stride_vdescale_m, stride_vdescale_d = get_strides_from_layout(v_scale, layout)
+        stride_qdescale_z, stride_qdescale_h, stride_qdescale_m, stride_qdescale_d = get_strides_from_layout(
+            q_scale, layout
+        )
+        stride_kdescale_z, stride_kdescale_h, stride_kdescale_m, stride_kdescale_d = get_strides_from_layout(
+            k_scale, layout
+        )
+        stride_vdescale_z, stride_vdescale_h, stride_vdescale_m, stride_vdescale_d = get_strides_from_layout(
+            v_scale, layout
+        )
     else:
         stride_qdescale_z, stride_qdescale_h, stride_qdescale_m, stride_qdescale_d = None, None, None, None
         stride_kdescale_z, stride_kdescale_h, stride_kdescale_m, stride_kdescale_d = None, None, None, None
@@ -981,7 +979,7 @@ def attention_mxfp8_forward_triton_impl(
         BLOCK_N=block_n,
         QUANT_BLOCK_SIZE=quant_block_size,
         QUANT_SIZE=quant_size,
-        **kernel_kwargs
+        **kernel_kwargs,
     )
 
     return o, softmax_lse, exp_scores
@@ -995,7 +993,7 @@ def fake_attention_mxfp8_forward_triton_impl(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
-    p_scale: int,       # p_scale = 127 if not quantize p
+    p_scale: int,  # p_scale = 127 if not quantize p
     sm_scale: float,
     alibi_slopes: Optional[torch.Tensor],
     causal: bool,
@@ -1034,7 +1032,9 @@ def fake_attention_mxfp8_forward_triton_impl(
 
 
 @_torch_custom_op_wrapper(
-    "primus_turbo::attention_triton_mxfp8_backward_triton_impl", mutates_args=("dq", "dk", "dv"), device_types="cuda"
+    "primus_turbo::attention_triton_mxfp8_backward_triton_impl",
+    mutates_args=("dq", "dk", "dv"),
+    device_types="cuda",
 )
 def attention_triton_mxfp8_backward_triton_impl(
     do: torch.Tensor,
@@ -1099,7 +1099,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         print("max_seqlen_k:", max_seqlen_k)
         print("use_exp2:", use_exp2)
         print("use_mxfp8:", use_mxfp8)
-        print("block_m_dq_bwd:", block_m_dq_bwd)  
+        print("block_m_dq_bwd:", block_m_dq_bwd)
         print("block_n_dq_bwd:", block_n_dq_bwd)
         print("block_m_dkv_bwd:", block_m_dkv_bwd)
         print("block_n_dkv_bwd:", block_n_dkv_bwd)
@@ -1119,15 +1119,15 @@ def attention_triton_mxfp8_backward_triton_impl(
 
     # get strides and shape
     batch, nheads_q, nheads_k, head_size_qk, head_size_v, max_seqlen_q, max_seqlen_k = get_shape_from_layout(
-        q, k, v, layout, cu_seqlens_q, cu_seqlens_k, max_seqlen_q,
-        max_seqlen_k)
+        q, k, v, layout, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k
+    )
 
     assert quant_block_size % quant_size == 0, "quant block must be divided by quant size"
     assert block_m_dq_bwd % quant_block_size == 0, "block M in dq bwd must be divided by quant size"
     assert block_m_dkv_bwd % quant_block_size == 0, "block M in dkv bwd must be divided by quant size"
     assert block_n_dq_bwd % quant_block_size == 0, "block N in dq bwd must be divided by quant size"
     assert block_n_dkv_bwd % quant_block_size == 0, "block N in dkv bwd must be divided by quant size"
-    
+
     q_strides = get_strides_from_layout(q, layout)
     k_strides = get_strides_from_layout(k, layout)
     v_strides = get_strides_from_layout(v, layout)
@@ -1162,7 +1162,7 @@ def attention_triton_mxfp8_backward_triton_impl(
             copy_back["dq"] = True
 
         dq.zero_()
-    stride_dq_all = dq.stride()[0]
+    dq.stride()[0]
 
     # deal with dk, dv
     if (dk is None) or (dv is None):
@@ -1188,8 +1188,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         stride_lse_delta_m, stride_lse_delta_h = softmax_lse.stride()
         stride_lse_delta_z = 0
     else:
-        stride_lse_delta_z, stride_lse_delta_h, stride_lse_delta_m = softmax_lse.stride(
-        )
+        stride_lse_delta_z, stride_lse_delta_h, stride_lse_delta_m = softmax_lse.stride()
 
     if use_mxfp8:
         # _shape = (batch, nheads_q, triton.cdiv(max_seqlen_q, quant_block_size), triton.cdiv(head_size_v, quant_block_size))
@@ -1205,10 +1204,18 @@ def attention_triton_mxfp8_backward_triton_impl(
             raise AssertionError(f"Got unsupported layout for do_scale: {layout}")
         do_fp8 = torch.empty_like(do, dtype=get_f8_bwd_dtype())
         do_scale = torch.empty(_shape, dtype=torch.uint8, device=q.device)
-        stride_dodescalez, stride_dodescaleh, stride_dodescalem, stride_dodescaled = get_strides_from_layout(do_scale, layout)
-        stride_qdescalez, stride_qdescaleh, stride_qdescalem, stride_qdescaled = get_strides_from_layout(q_scale, layout)
-        stride_kdescalez, stride_kdescaleh, stride_kdescalem, stride_kdescaled = get_strides_from_layout(k_scale, layout)
-        stride_vdescalez, stride_vdescaleh, stride_vdescalem, stride_vdescaled = get_strides_from_layout(v_scale, layout)
+        stride_dodescalez, stride_dodescaleh, stride_dodescalem, stride_dodescaled = get_strides_from_layout(
+            do_scale, layout
+        )
+        stride_qdescalez, stride_qdescaleh, stride_qdescalem, stride_qdescaled = get_strides_from_layout(
+            q_scale, layout
+        )
+        stride_kdescalez, stride_kdescaleh, stride_kdescalem, stride_kdescaled = get_strides_from_layout(
+            k_scale, layout
+        )
+        stride_vdescalez, stride_vdescaleh, stride_vdescalem, stride_vdescaled = get_strides_from_layout(
+            v_scale, layout
+        )
 
     else:
         do_fp8 = None
@@ -1218,8 +1225,8 @@ def attention_triton_mxfp8_backward_triton_impl(
         stride_kdescalez, stride_kdescaleh, stride_kdescalem, stride_kdescaled = None, None, None, None
         stride_vdescalez, stride_vdescaleh, stride_vdescalem, stride_vdescaled = None, None, None, None
 
-    preprocess_o_block = 64 if max_seqlen_q>64 else max_seqlen_q
-    preprocess_o_block = quant_block_size if quant_block_size>preprocess_o_block else preprocess_o_block
+    preprocess_o_block = 64 if max_seqlen_q > 64 else max_seqlen_q
+    preprocess_o_block = quant_block_size if quant_block_size > preprocess_o_block else preprocess_o_block
     grid_prebwd = (triton.cdiv(max_seqlen_q, preprocess_o_block), batch_headsize_q)
     wrap_triton(_bwd_preprocess_use_o_mxfp8)[grid_prebwd](
         o,
@@ -1272,12 +1279,9 @@ def attention_triton_mxfp8_backward_triton_impl(
         print("dv:", dv, dv.shape)
         print("L:", softmax_lse, softmax_lse.shape)
         # print("delta:", delta, delta.shape)
-        print("stride_qz, stride_qh, stride_qm, stride_qk:", stride_qz,
-              stride_qh, stride_qm, stride_qk)
-        print("stride_kz, stride_kh, stride_kn, stride_kk:", stride_kz,
-              stride_kh, stride_kn, stride_kk)
-        print("stride_vz, stride_vh, stride_vn, stride_vk:", stride_vz,
-              stride_vh, stride_vn, stride_vk)
+        print("stride_qz, stride_qh, stride_qm, stride_qk:", stride_qz, stride_qh, stride_qm, stride_qk)
+        print("stride_kz, stride_kh, stride_kn, stride_kk:", stride_kz, stride_kh, stride_kn, stride_kk)
+        print("stride_vz, stride_vh, stride_vn, stride_vk:", stride_vz, stride_vh, stride_vn, stride_vk)
         print("batch_q:", batch)
         print("heads_q:", nheads_q)
         print("max_seqlen_q:", max_seqlen_q)
@@ -1299,10 +1303,10 @@ def attention_triton_mxfp8_backward_triton_impl(
     else:
         pass
 
-    p_scale_t = math.pow(2.0, int(p_scale-127))
+    p_scale_t = math.pow(2.0, int(p_scale - 127))
     log_p_scale = math.log(p_scale_t)
-    
-    print("log_p_scale",log_p_scale)
+
+    print("log_p_scale", log_p_scale)
 
     wrap_triton(_bwd_kernel_dq_mxfp8)[grid_bwd](
         q,
@@ -1378,7 +1382,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         F8_BWD_DTYPE=get_tl_f8_bwd_dtype(),
         QUANT_BLOCK_SIZE=quant_block_size,
         QUANT_SIZE=quant_size,
-        **kernel_kwargs
+        **kernel_kwargs,
     )
 
     # use mfma_16x16x128 when these K can be divided by 128
@@ -1386,7 +1390,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         kernel_kwargs["matrix_instr_nonkdim"] = 16
     else:
         kernel_kwargs = {}
-    
+
     grid_bwd_dkdv = (
         batch_headsize_k,
         triton.cdiv(max_seqlen_k, block_n_dkv_bwd),
@@ -1465,7 +1469,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         F8_BWD_DTYPE=get_tl_f8_bwd_dtype(),
         QUANT_BLOCK_SIZE=quant_block_size,
         QUANT_SIZE=quant_size,
-        **kernel_kwargs
+        **kernel_kwargs,
     )
 
     if DEBUG:
@@ -1496,6 +1500,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         dv = dv_og
 
     return dq, dk, dv
+
 
 @attention_triton_mxfp8_backward_triton_impl.register_fake
 def fake_attention_triton_mxfp8_backward_triton_impl(
@@ -1528,5 +1533,8 @@ def fake_attention_triton_mxfp8_backward_triton_impl(
     block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
     quant_block_size: int = 32,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return torch.empty_like(q, dtype=fwd_torch_dtype), torch.empty_like(
-        k, dtype=fwd_torch_dtype), torch.empty_like(v, dtype=fwd_torch_dtype),
+    return (
+        torch.empty_like(q, dtype=fwd_torch_dtype),
+        torch.empty_like(k, dtype=fwd_torch_dtype),
+        torch.empty_like(v, dtype=fwd_torch_dtype),
+    )

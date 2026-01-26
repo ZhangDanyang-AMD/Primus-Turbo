@@ -14,9 +14,9 @@ from primus_turbo.pytorch.kernels.attention.attention_csrc_impl import (
     attention_aiter_csrc_forward_impl,
 )
 from primus_turbo.pytorch.kernels.attention.attention_triton_impl import (
+    attention_mxfp8_forward_triton_impl,
     attention_triton_backward_impl,
     attention_triton_forward_impl,
-    attention_mxfp8_forward_triton_impl,
     attention_triton_mxfp8_backward_triton_impl,
     get_f8_fwd_dtype,
     is_cdna4,
@@ -24,8 +24,8 @@ from primus_turbo.pytorch.kernels.attention.attention_triton_impl import (
 from primus_turbo.pytorch.ops.attention.attention_utils import (
     block_scaling_node,
     block_scaling_node_mxfp8,
-    quant_v_get_p_scale,
     quant_p_scale_mxfp8,
+    quant_v_get_p_scale,
 )
 
 
@@ -392,7 +392,7 @@ class AttentionTritonMXFP8FunctionCPA2A(torch.autograd.Function):
         block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
         block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
         block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
-        quant_block_size: int = 32
+        quant_block_size: int = 32,
     ):
         assert is_cdna4(), "mxfp8 is only supported by gfx950 and newer version"
         assert bias is None
@@ -413,32 +413,38 @@ class AttentionTritonMXFP8FunctionCPA2A(torch.autograd.Function):
         q_local_heads, k_local_heads, v_local_heads = attn_helper.splits_qkv_after_a2a(qkv_out)
 
         if use_mxfp8:
-            q_local_heads, q_scale = block_scaling_node_mxfp8(q_local_heads, 
-                                                quant_block_size,
-                                                "bshd",
-                                                is_2d_block=True,
-                                                float8_dtype_pt=get_f8_fwd_dtype(),
-                                                cu_seqlens=0,
-                                                max_seqlens=q.shape[1])
-            k_local_heads, k_scale = block_scaling_node_mxfp8(k_local_heads, 
-                                                quant_block_size,
-                                                "bshd",
-                                                is_2d_block=True,
-                                                float8_dtype_pt=get_f8_fwd_dtype(),
-                                                cu_seqlens=0,
-                                                max_seqlens=k.shape[1])
-            v_local_heads, v_scale = block_scaling_node_mxfp8(v_local_heads, 
-                                                quant_block_size,
-                                                "bshd",
-                                                is_2d_block=True,
-                                                float8_dtype_pt=get_f8_fwd_dtype(),
-                                                cu_seqlens=0,
-                                                max_seqlens=k.shape[1])
+            q_local_heads, q_scale = block_scaling_node_mxfp8(
+                q_local_heads,
+                quant_block_size,
+                "bshd",
+                is_2d_block=True,
+                float8_dtype_pt=get_f8_fwd_dtype(),
+                cu_seqlens=0,
+                max_seqlens=q.shape[1],
+            )
+            k_local_heads, k_scale = block_scaling_node_mxfp8(
+                k_local_heads,
+                quant_block_size,
+                "bshd",
+                is_2d_block=True,
+                float8_dtype_pt=get_f8_fwd_dtype(),
+                cu_seqlens=0,
+                max_seqlens=k.shape[1],
+            )
+            v_local_heads, v_scale = block_scaling_node_mxfp8(
+                v_local_heads,
+                quant_block_size,
+                "bshd",
+                is_2d_block=True,
+                float8_dtype_pt=get_f8_fwd_dtype(),
+                cu_seqlens=0,
+                max_seqlens=k.shape[1],
+            )
             p_scale = quant_p_scale_mxfp8()
         else:
-            q_scale = torch.scalar_tensor(1., device=q.device)
-            k_scale = torch.scalar_tensor(1., device=q.device)
-            v_scale = torch.scalar_tensor(1., device=q.device)
+            q_scale = torch.scalar_tensor(1.0, device=q.device)
+            k_scale = torch.scalar_tensor(1.0, device=q.device)
+            v_scale = torch.scalar_tensor(1.0, device=q.device)
             p_scale = 127
 
         output_local_heads, softmax_lse, exp_scores = attention_mxfp8_forward_triton_impl(
@@ -484,12 +490,12 @@ class AttentionTritonMXFP8FunctionCPA2A(torch.autograd.Function):
             ctx.causal = causal
             ctx.dropout_p = dropout_p
             ctx.layout = "bshd"
-            ctx.block_m_dq_bwd = block_m_dq_bwd  
-            ctx.block_n_dq_bwd = block_n_dq_bwd  
-            ctx.block_m_dkv_bwd = block_m_dkv_bwd  
-            ctx.block_n_dkv_bwd = block_n_dkv_bwd  
+            ctx.block_m_dq_bwd = block_m_dq_bwd
+            ctx.block_n_dq_bwd = block_n_dq_bwd
+            ctx.block_m_dkv_bwd = block_m_dkv_bwd
+            ctx.block_n_dkv_bwd = block_n_dkv_bwd
             ctx.quant_block_size = quant_block_size
-            
+
             ctx.cu_seqlens_q = torch.tensor(0, device="cuda")
             ctx.cu_seqlens_k = torch.tensor(0, device="cuda")
             ctx.max_seqlens_q = q_local_heads.shape[1]
@@ -561,10 +567,10 @@ class AttentionTritonMXFP8FunctionCPA2A(torch.autograd.Function):
             max_seqlen_q=ctx.max_seqlens_q,
             max_seqlen_k=ctx.max_seqlens_k,
             use_mxfp8=ctx.use_mxfp8,
-            block_m_dq_bwd = ctx.block_m_dq_bwd,  
-            block_n_dq_bwd = ctx.block_n_dq_bwd,  
-            block_m_dkv_bwd = ctx.block_m_dkv_bwd,  
-            block_n_dkv_bwd = ctx.block_n_dkv_bwd,  
+            block_m_dq_bwd=ctx.block_m_dq_bwd,
+            block_n_dq_bwd=ctx.block_n_dq_bwd,
+            block_m_dkv_bwd=ctx.block_m_dkv_bwd,
+            block_n_dkv_bwd=ctx.block_n_dkv_bwd,
             quant_block_size=ctx.quant_block_size,
         )
 

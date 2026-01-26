@@ -5,11 +5,13 @@
 ###############################################################################
 
 from typing import Literal, Optional
+
 from .attention_with_cp_a2a import (
     AttentionCKFunctionCPA2A,
     AttentionTritonFunctionCPA2A,
     AttentionTritonMXFP8FunctionCPA2A,
 )
+
 
 def dispatch_attention_cp_functions(
     q,
@@ -25,17 +27,17 @@ def dispatch_attention_cp_functions(
     return_lse,
     return_attn_probs,
     is_grad_enabled,
-    backend_type,    
-    quant_type : Optional[Literal["fp8_blockwise", "mxfp8"]], # "fp8", "mxfp8", "None"
+    backend_type,
+    quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]],  # "fp8", "mxfp8", "None"
     cp_group,
-    cp_comm_type,    
+    cp_comm_type,
     block_m_fwd: int = 64,  # block of query seq len in fwd
     block_n_fwd: int = 64,  # block of key/value seq len in fwd
     block_m_dq_bwd: int = 64,  # block of dq seq len in bwd
     block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
     block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
     block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
-    quant_block_size: int = 32
+    quant_block_size: int = 32,
 ):
     if backend_type == "triton":
         if cp_comm_type == "a2a":
@@ -78,7 +80,7 @@ def dispatch_attention_cp_functions(
                     block_n_dq_bwd,
                     block_m_dkv_bwd,
                     block_n_dkv_bwd,
-                    quant_block_size
+                    quant_block_size,
                 )
             else:
                 raise NotImplementedError(

@@ -1,18 +1,17 @@
-from typing import Tuple, Optional
+import logging
+from typing import Optional, Tuple
 
 import torch
 import triton
-import logging
 from torch.library import triton_op, wrap_triton
 
 from primus_turbo.triton.quantize.quant_blockwise import (
     quant_fp8_blockwise_kernel,
     quant_fp8_blockwise_segment_m_kernel,
 )
-
 from primus_turbo.triton.quantize.quant_mxfp8 import (
+    _convert_from_mxfp8_kernel,
     _convert_to_mxfp8_kernel,
-    _convert_from_mxfp8_kernel
 )
 
 """
@@ -141,11 +140,14 @@ def quant_fp8_blockwise_segment_m_impl(
     )
     return x_fp8, x_scales
 
+
 logger = logging.getLogger(__name__)
+
 
 def is_cdna4():
     target = triton.runtime.driver.active.get_current_target()
     return target is not None and target.backend == "hip" and target.arch == "gfx950"
+
 
 @triton_op("primus_turbo::convert_to_mxfp8", mutates_args={})
 def convert_to_mxfp8(
@@ -161,7 +163,7 @@ def convert_to_mxfp8(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     torch._check(
         data_hp.shape[axis] % block_size == 0,
-        f"tensor shape ({data_hp.shape}) at axis={axis} is not divisible by {block_size}"
+        f"tensor shape ({data_hp.shape}) at axis={axis} is not divisible by {block_size}",
     )
     assert not is_2d_block or data_hp.size(-2) % block_size == 0
     assert data_hp.dtype in [torch.float32, torch.bfloat16]
@@ -174,23 +176,20 @@ def convert_to_mxfp8(
     data_hp = data_hp.transpose(axis, -1)
     data_shape = data_hp.shape
     data_hp = data_hp.reshape(-1, data_shape[-1])
-    data_lp = torch.empty(data_shape, dtype=float8_dtype_pt,
-                          device=data_hp.device).reshape(-1, data_shape[-1])
-    
+    data_lp = torch.empty(data_shape, dtype=float8_dtype_pt, device=data_hp.device).reshape(
+        -1, data_shape[-1]
+    )
+
     if is_2d_block:
-        scales_shape = (*data_shape[:-2], data_shape[-2] // block_size,
-                        data_shape[-1] // block_size)
+        scales_shape = (*data_shape[:-2], data_shape[-2] // block_size, data_shape[-1] // block_size)
     else:
         scales_shape = (*data_shape[:-1], data_shape[-1] // block_size)
-    scales = torch.ones(scales_shape,
-                         dtype=torch.uint8,
-                         device=data_hp.device).reshape(-1, scales_shape[-1])
+    scales = torch.ones(scales_shape, dtype=torch.uint8, device=data_hp.device).reshape(-1, scales_shape[-1])
     stride_xm, stride_xn = data_hp.stride()
     stride_ym, stride_yn = data_lp.stride()
     stride_sm, stride_sn = scales.stride()
     M, N = data_hp.shape
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]),
-                         triton.cdiv(N, META["BLOCK_N"]))
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]), triton.cdiv(N, META["BLOCK_N"]))
     assert M % block_size == 0, "tensor M shape must align to block size"
     assert N % block_size == 0, "tensor N shape must align to block size"
 
@@ -198,7 +197,7 @@ def convert_to_mxfp8(
     BLOCK_N = 64 if N >= 64 else N
     BLOCK_M = block_size if BLOCK_M < block_size else BLOCK_M
     BLOCK_N = block_size if BLOCK_N < block_size else BLOCK_N
-    
+
     if philox_seed is None:
         philox_seed = torch.randint(0, 2**31 - 1, (1,)).item()
     if philox_offset is None:
@@ -223,8 +222,7 @@ def convert_to_mxfp8(
         USE_ASM=use_asm,
     )
 
-    return data_lp.reshape(data_shape).transpose(
-        axis, -1), scales.reshape(scales_shape).transpose(axis, -1)
+    return data_lp.reshape(data_shape).transpose(axis, -1), scales.reshape(scales_shape).transpose(axis, -1)
 
 
 @triton_op("primus_turbo::convert_from_mxfp8", mutates_args={})
@@ -250,15 +248,13 @@ def convert_from_mxfp8(
     data_lp = data_lp.reshape(-1, orig_shape[-1])
 
     scales = scales.reshape(-1, orig_shape[-1] // block_size)
-    data_hp = data_lp.new_empty(orig_shape, dtype=output_dtype).reshape(
-        -1, orig_shape[-1])
+    data_hp = data_lp.new_empty(orig_shape, dtype=output_dtype).reshape(-1, orig_shape[-1])
 
     stride_xm, stride_xn = data_lp.stride()
     stride_ym, stride_yn = data_hp.stride()
     stride_sm, stride_sn = scales.stride()
     M, N = data_hp.shape
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]),
-                         triton.cdiv(N, META["BLOCK_N"]))
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]), triton.cdiv(N, META["BLOCK_N"]))
     BLOCK_M = 64 if M >= 64 else M
     BLOCK_N = 64 if N >= 64 else N
     wrap_triton(_convert_from_mxfp8_kernel)[grid](
@@ -297,8 +293,7 @@ def _fake_convert_to_mxfp8(
 
     data_lp = data_hp.new_empty(data_hp.shape, dtype=float8_dtype_pt)
     if is_2d_block:
-        scales_shape = (*orig_shape[:-2], orig_shape[-2] // block_size,
-                        orig_shape[-1] // block_size)
+        scales_shape = (*orig_shape[:-2], orig_shape[-2] // block_size, orig_shape[-1] // block_size)
     else:
         scales_shape = (*orig_shape[:-1], orig_shape[-1] // block_size)
 

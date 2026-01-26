@@ -16,10 +16,16 @@ from primus_turbo.pytorch.kernels.attention.attention_csrc_impl import (
 from primus_turbo.pytorch.kernels.attention.attention_triton_impl import (
     attention_triton_backward_impl,
     attention_triton_forward_impl,
+    attention_mxfp8_forward_triton_impl,
+    attention_triton_mxfp8_backward_triton_impl,
+    get_f8_fwd_dtype,
+    is_cdna4,
 )
 from primus_turbo.pytorch.ops.attention.attention_utils import (
     block_scaling_node,
+    block_scaling_node_mxfp8,
     quant_v_get_p_scale,
+    quant_p_scale_mxfp8,
 )
 
 
@@ -343,6 +349,241 @@ class AttentionTritonFunctionCPA2A(torch.autograd.Function):
             dq_local_tokens,
             dk_local_tokens,
             dv_local_tokens,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
+class AttentionTritonMXFP8FunctionCPA2A(torch.autograd.Function):
+    """
+    QKV split by attention heads and a2a
+    Refer the paper `DeepSpeed Ulysses <https://arxiv.org/abs/2309.14509>` for detail.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        q,
+        k,
+        v,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        bias,
+        alibi_slopes,
+        return_lse,
+        return_softmax,
+        is_grad,
+        use_mxfp8,
+        cp_group,
+        block_m_fwd: int = 64,  # block of query seq len in fwd
+        block_n_fwd: int = 64,  # block of key/value seq len in fwd
+        block_m_dq_bwd: int = 64,  # block of dq seq len in bwd
+        block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
+        block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+        block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+        quant_block_size: int = 32
+    ):
+        assert is_cdna4(), "mxfp8 is only supported by gfx950 and newer version"
+        assert bias is None
+
+        n = cp_group.size()
+        b, s, h_q, d_qk = q.shape
+        _, _, h_kv, d_v = v.shape
+        s = s * n
+        assert h_q % n == 0
+        assert h_kv % n == 0
+        # bshd only
+        seq_dim = 1
+        attn_helper = get_attention_cp_a2a_helper(b, s, h_q, h_kv, d_qk, d_v, seq_dim, n)
+
+        qkv = attn_helper.combine_qkv_before_a2a(q, k, v)
+        qkv_out = torch.empty_like(qkv)
+        torch.distributed.all_to_all_single(qkv_out, qkv, group=cp_group, async_op=False)
+        q_local_heads, k_local_heads, v_local_heads = attn_helper.splits_qkv_after_a2a(qkv_out)
+
+        if use_mxfp8:
+            q_local_heads, q_scale = block_scaling_node_mxfp8(q_local_heads, 
+                                                quant_block_size,
+                                                "bshd",
+                                                is_2d_block=True,
+                                                float8_dtype_pt=get_f8_fwd_dtype(),
+                                                cu_seqlens=0,
+                                                max_seqlens=q.shape[1])
+            k_local_heads, k_scale = block_scaling_node_mxfp8(k_local_heads, 
+                                                quant_block_size,
+                                                "bshd",
+                                                is_2d_block=True,
+                                                float8_dtype_pt=get_f8_fwd_dtype(),
+                                                cu_seqlens=0,
+                                                max_seqlens=k.shape[1])
+            v_local_heads, v_scale = block_scaling_node_mxfp8(v_local_heads, 
+                                                quant_block_size,
+                                                "bshd",
+                                                is_2d_block=True,
+                                                float8_dtype_pt=get_f8_fwd_dtype(),
+                                                cu_seqlens=0,
+                                                max_seqlens=k.shape[1])
+            p_scale = quant_p_scale_mxfp8()
+        else:
+            q_scale = torch.scalar_tensor(1., device=q.device)
+            k_scale = torch.scalar_tensor(1., device=q.device)
+            v_scale = torch.scalar_tensor(1., device=q.device)
+            p_scale = 127
+
+        output_local_heads, softmax_lse, exp_scores = attention_mxfp8_forward_triton_impl(
+            q=q_local_heads,
+            k=k_local_heads,
+            v=v_local_heads,
+            q_scale=q_scale,
+            k_scale=k_scale,
+            v_scale=v_scale,
+            p_scale=p_scale,
+            sm_scale=softmax_scale,
+            alibi_slopes=alibi_slopes,
+            causal=causal,
+            window_size_left=window_size[0],
+            window_size_right=window_size[1],
+            bias=bias,
+            dropout_p=dropout_p,
+            return_softmax=return_softmax,
+            use_mxfp8=use_mxfp8,
+            block_m=block_m_fwd,
+            block_n=block_n_fwd,
+            quant_block_size=quant_block_size,
+        )
+
+        # save_ctx for backward
+        if is_grad:
+            # q, k, v should be mxfp8 when set use_fp8 to True
+            ctx.save_for_backward(
+                q_local_heads,
+                k_local_heads,
+                v_local_heads,
+                output_local_heads,
+                softmax_lse,
+                alibi_slopes,
+                bias,
+                q_scale,
+                k_scale,
+                v_scale,
+            )
+            ctx.use_mxfp8 = use_mxfp8
+            ctx.p_scale = p_scale
+            ctx.sm_scale = softmax_scale
+            ctx.causal = causal
+            ctx.dropout_p = dropout_p
+            ctx.layout = "bshd"
+            ctx.block_m_dq_bwd = block_m_dq_bwd  
+            ctx.block_n_dq_bwd = block_n_dq_bwd  
+            ctx.block_m_dkv_bwd = block_m_dkv_bwd  
+            ctx.block_n_dkv_bwd = block_n_dkv_bwd  
+            ctx.quant_block_size = quant_block_size
+            
+            ctx.cu_seqlens_q = torch.tensor(0, device="cuda")
+            ctx.cu_seqlens_k = torch.tensor(0, device="cuda")
+            ctx.max_seqlens_q = q_local_heads.shape[1]
+            ctx.max_seqlens_k = k_local_heads.shape[1]
+
+            ctx.attn_helper = attn_helper
+            ctx.seq_dim = seq_dim
+            ctx.cp_group = cp_group
+
+        output_local_heads = attn_helper.reshape_o_before_a2a(output_local_heads)
+        output_local_tokens = torch.empty_like(output_local_heads)
+        torch.distributed.all_to_all_single(
+            output_local_tokens, output_local_heads, group=cp_group, async_op=False
+        )
+        output_local_tokens = attn_helper.reshape_o_after_a2a(output_local_tokens)
+
+        result = [output_local_tokens]
+        if return_lse:
+            result.append(softmax_lse)
+        if return_softmax:
+            result.append(exp_scores)
+        return result[0] if len(result) == 1 else tuple(result)
+
+    @staticmethod
+    def backward(ctx, dout, *args):
+        (
+            q_local_heads,
+            k_local_heads,
+            v_local_heads,
+            output_local_heads,
+            softmax_lse,
+            alibi_slopes,
+            bias,
+            q_scale,
+            k_scale,
+            v_scale,
+        ) = ctx.saved_tensors
+        assert is_cdna4(), "mxfp8 is only supported by gfx950 and newer version"
+        assert bias is None, "Currently bias is not supported by fa backward function."
+        assert dout.dtype is torch.bfloat16, f"dout should be bfloat16 but get {dout.dtype}"
+        attn_helper = ctx.attn_helper
+
+        dout = attn_helper.reshape_do_before_a2a(dout)
+        dout_local_heads = torch.empty_like(dout)
+        torch.distributed.all_to_all_single(dout_local_heads, dout, group=ctx.cp_group)
+        dout_local_heads = attn_helper.reshape_do_after_a2a(dout_local_heads)
+
+        dq_local_heads, dk_local_heads, dv_local_heads = attention_triton_mxfp8_backward_triton_impl(
+            do=dout_local_heads,
+            q=q_local_heads,
+            k=k_local_heads,
+            v=v_local_heads,
+            o=output_local_heads,
+            softmax_lse=softmax_lse,
+            dq=None,
+            dk=None,
+            dv=None,
+            q_scale=q_scale,
+            k_scale=k_scale,
+            v_scale=v_scale,
+            sm_scale=ctx.sm_scale,
+            p_scale=ctx.p_scale,
+            alibi_slopes=alibi_slopes,
+            causal=ctx.causal,
+            window_size_left=-1,
+            window_size_right=-1,
+            cu_seqlens_q=ctx.cu_seqlens_q,
+            cu_seqlens_k=ctx.cu_seqlens_k,
+            max_seqlen_q=ctx.max_seqlens_q,
+            max_seqlen_k=ctx.max_seqlens_k,
+            use_mxfp8=ctx.use_mxfp8,
+            block_m_dq_bwd = ctx.block_m_dq_bwd,  
+            block_n_dq_bwd = ctx.block_n_dq_bwd,  
+            block_m_dkv_bwd = ctx.block_m_dkv_bwd,  
+            block_n_dkv_bwd = ctx.block_n_dkv_bwd,  
+            quant_block_size=ctx.quant_block_size,
+        )
+
+        dqkv = attn_helper.combine_dqkv_before_a2a(dq_local_heads, dk_local_heads, dv_local_heads)
+        dqkv_out = torch.empty_like(dqkv)
+        torch.distributed.all_to_all_single(dqkv_out, dqkv, group=ctx.cp_group)
+        dq_local_tokens, dk_local_tokens, dv_local_tokens = attn_helper.split_dqkv_after_a2a(dqkv_out)
+
+        return (
+            dq_local_tokens,
+            dk_local_tokens,
+            dv_local_tokens,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,

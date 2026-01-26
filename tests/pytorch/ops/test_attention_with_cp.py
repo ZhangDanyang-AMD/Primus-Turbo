@@ -69,14 +69,23 @@ class AttentionWithCPTestCase(MultiProcessTestCase):
     @parametrize("causal", [True])
     @parametrize("backend_type", ["ck", "triton"])
     @parametrize("cp_comm_type", ["a2a"])
-    @parametrize("fp8", [True, False])
-    def test_attention_with_cp(self, batch, config, causal, backend_type, cp_comm_type, fp8):
+    @parametrize("quant_type", [None, "fp8_blockwise", "mxfp8"])
+    @parametrize("block_m", [32, 64, 128])
+    @parametrize("block_n", [32, 64, 128])
+    @parametrize("quant_block_size", [32, 64, 128])
+    def test_attention_with_cp(self, batch, config, causal, backend_type, cp_comm_type, quant_type,
+                               block_m, block_n, quant_block_size):
         self._init_process()
         cp_group = dist.group.WORLD
 
         # ck backend do not support fp8 yet
-        if backend_type == "ck" and fp8:
+        if backend_type == "ck" and quant_type is not None:
             return
+
+        # not test all block size for none-mxfp8 quantization 
+        if quant_type != "mxfp8":
+            if block_m != 32 or block_n != 32 or quant_block_size != 32:
+                return
 
         device = "cuda"
         dtype = torch.bfloat16
@@ -121,8 +130,8 @@ class AttentionWithCPTestCase(MultiProcessTestCase):
             [query, key, value], cp_group
         )
 
-        if fp8:
-            o = pt.ops.attention_fp8_blockwise(
+        if quant_type is not None:
+            o = pt.ops.attention_fp8_quant(
                 query_local_token,
                 key_local_token,
                 value_local_token,
@@ -137,6 +146,14 @@ class AttentionWithCPTestCase(MultiProcessTestCase):
                 return_attn_probs=False,
                 backend_type=backend_type,
                 cp_param_bundle=cp_param_bundle,
+                quant_type = quant_type, # "fp8", "mxfp8"
+                block_m_fwd=block_m,
+                block_n_fwd=block_n,
+                block_m_dq_bwd=block_m,
+                block_n_dq_bwd=block_n,
+                block_m_dkv_bwd=block_m,
+                block_n_dkv_bwd=block_n,
+                quant_block_size=quant_block_size,
             )
         else:
             o = pt.ops.attention(

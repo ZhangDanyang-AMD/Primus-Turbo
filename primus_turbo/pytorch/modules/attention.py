@@ -4,11 +4,11 @@
 # See LICENSE for license information.
 ###############################################################################
 
-from typing import Optional
+from typing import Optional, Literal
 
 import torch
 
-from primus_turbo.pytorch.ops.attention import attention, attention_fp8_blockwise
+from primus_turbo.pytorch.ops.attention import attention, attention_fp8_quant
 
 __all__ = ["TurboAttention"]
 
@@ -24,12 +24,20 @@ class TurboAttention(torch.nn.Module):
         deterministic=False,
         return_lse=False,
         return_attn_probs=False,
-        use_fp8=False,
         backend_type: str = "ck",  # 'ck', 'triton'
+        # following parameters will be used in mxfp8
+        quant_type : Optional[Literal["fp8_blockwise", "mxfp8"]] = None, # "fp8", "mxfp8"
+        block_m_fwd: int = 64,  # block of query seq len in fwd
+        block_n_fwd: int = 64,  # block of key/value seq len in fwd
+        block_m_dq_bwd: int = 64,  # block of dq seq len in bwd
+        block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
+        block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+        block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+        quant_block_size: int = 32
     ):
         super().__init__()
 
-        assert not (use_fp8 and backend_type == "ck"), "When use_fp8 is True, attention_type cannot be 'ck'."
+        assert not (quant_type is not None and backend_type == "ck"), "When quant_type is not None, attention_type cannot be 'ck'."
 
         self.dropout_p = dropout_p
         self.softmax_scale = softmax_scale
@@ -40,11 +48,20 @@ class TurboAttention(torch.nn.Module):
         self.return_attn_probs = return_attn_probs
         self.deterministic = deterministic
         self.backend_type = backend_type
+        # following parameters will be used in mxfp8
+        self.quant_type = quant_type
+        self.block_m_fwd=block_m_fwd
+        self.block_n_fwd=block_n_fwd
+        self.block_m_dq_bwd=block_m_dq_bwd
+        self.block_n_dq_bwd=block_n_dq_bwd
+        self.block_m_dkv_bwd=block_m_dkv_bwd
+        self.block_n_dkv_bwd=block_n_dkv_bwd
+        self.quant_block_size=quant_block_size
 
-        if backend_type == "ck" and use_fp8 == False:
+        if backend_type == "ck" and quant_type is None:
             self.attention_fn = attention
         elif backend_type == "triton":
-            self.attention_fn = attention_fp8_blockwise
+            self.attention_fn = attention_fp8_quant
         else:
             raise ValueError(f"Unknown attention type: {backend_type}")
 
@@ -55,6 +72,20 @@ class TurboAttention(torch.nn.Module):
         v: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ):
+        if self.quant_type is not None:
+            kwargs = {        
+                "quant_type": self.quant_type,
+                "block_m_fwd": self.block_m_fwd,
+                "block_n_fwd": self.block_n_fwd,
+                "block_m_dq_bwd": self.block_m_dq_bwd,
+                "block_n_dq_bwd": self.block_n_dq_bwd,
+                "block_m_dkv_bwd": self.block_m_dkv_bwd,
+                "block_n_dkv_bwd": self.block_n_dkv_bwd,
+                "quant_block_size": self.quant_block_size,
+            }
+        else:
+            kwargs = {}
+            
         return self.attention_fn(
             q,
             k,
@@ -69,4 +100,5 @@ class TurboAttention(torch.nn.Module):
             return_lse=self.return_lse,
             return_attn_probs=self.return_attn_probs,
             backend_type=self.backend_type,
+            **kwargs
         )

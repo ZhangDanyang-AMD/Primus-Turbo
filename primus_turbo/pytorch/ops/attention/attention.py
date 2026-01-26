@@ -4,7 +4,7 @@
 # See LICENSE for license information.
 ###############################################################################
 
-from typing import Optional
+from typing import Optional,Literal
 
 import torch
 
@@ -15,16 +15,22 @@ from primus_turbo.pytorch.kernels.attention.attention_csrc_impl import (
 from primus_turbo.pytorch.kernels.attention.attention_triton_impl import (
     attention_triton_backward_impl,
     attention_triton_forward_impl,
+    attention_mxfp8_forward_triton_impl,
+    attention_triton_mxfp8_backward_triton_impl,
+    is_cdna4,
 )
 from primus_turbo.pytorch.ops.attention.attention_cp_dispatcher import (
     dispatch_attention_cp_functions,
 )
 from primus_turbo.pytorch.ops.attention.attention_utils import (
     block_scaling_node,
+    block_scaling_node_mxfp8,
+    quant_p_scale_mxfp8,
     quant_v_get_p_scale,
+    get_f8_fwd_dtype,
 )
 
-__all__ = ["attention", "attention_fp8_blockwise"]
+__all__ = ["attention", "attention_fp8_quant"]
 
 
 class AttentionCKFunction(torch.autograd.Function):
@@ -239,6 +245,187 @@ class AttentionTritonFunction(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None
 
 
+class AttentionTritonMXFP8Function(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        q,
+        k,
+        v,
+        dropout_p,
+        softmax_scale,
+        causal,
+        window_size,
+        bias,
+        alibi_slopes,
+        return_lse,
+        return_softmax,
+        is_grad_enabled,
+        use_mxfp8,
+        block_m_fwd: int = 64,  # block of query seq len in fwd
+        block_n_fwd: int = 64,  # block of key/value seq len in fwd
+        block_m_dq_bwd: int = 64,  # block of dq seq len in bwd
+        block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
+        block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+        block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+        quant_block_size: int = 32
+    ):
+        assert is_cdna4(), "mxfp8 is only supported by gfx950 and newer version"
+        is_grad = is_grad_enabled and any(x.requires_grad for x in [q, k, v])
+
+        if softmax_scale is None:
+            softmax_scale = q.shape[-1] ** (-0.5)
+
+        if use_mxfp8:
+            q, q_scale = block_scaling_node_mxfp8(q, 
+                                                quant_block_size,
+                                                "bshd",
+                                                is_2d_block=True,
+                                                float8_dtype_pt=get_f8_fwd_dtype(),
+                                                cu_seqlens=0,
+                                                max_seqlens=q.shape[1])
+            k, k_scale = block_scaling_node_mxfp8(k, 
+                                                quant_block_size,
+                                                "bshd",
+                                                is_2d_block=True,
+                                                float8_dtype_pt=get_f8_fwd_dtype(),
+                                                cu_seqlens=0,
+                                                max_seqlens=k.shape[1])
+            v, v_scale = block_scaling_node_mxfp8(v, 
+                                                quant_block_size,
+                                                "bshd",
+                                                is_2d_block=True,
+                                                float8_dtype_pt=get_f8_fwd_dtype(),
+                                                cu_seqlens=0,
+                                                max_seqlens=k.shape[1])
+            p_scale = quant_p_scale_mxfp8()
+        else:
+            q_scale = torch.scalar_tensor(1., device=q.device)
+            k_scale = torch.scalar_tensor(1., device=q.device)
+            v_scale = torch.scalar_tensor(1., device=q.device)
+            p_scale = 127
+
+        output, softmax_lse, exp_scores = attention_mxfp8_forward_triton_impl(
+            q=q,
+            k=k,
+            v=v,
+            q_scale=q_scale,
+            k_scale=k_scale,
+            v_scale=v_scale,
+            p_scale=p_scale,
+            sm_scale=softmax_scale,
+            alibi_slopes=alibi_slopes,
+            causal=causal,
+            window_size_left=window_size[0],
+            window_size_right=window_size[1],
+            bias=bias,
+            dropout_p=dropout_p,
+            return_softmax=return_softmax,
+            use_mxfp8=use_mxfp8,
+            block_m=block_m_fwd,
+            block_n=block_n_fwd,
+            quant_block_size=quant_block_size,
+        )
+
+        if is_grad:
+            # q, k, v should be fp8 when set use_fp8 to True
+            ctx.save_for_backward(
+                q,
+                k,
+                v,
+                output,
+                softmax_lse,
+                alibi_slopes,
+                bias,
+                q_scale,
+                k_scale,
+                v_scale,
+            )
+            ctx.use_mxfp8 = use_mxfp8
+            ctx.p_scale = p_scale
+            ctx.sm_scale = softmax_scale
+            ctx.causal = causal
+            ctx.dropout_p = dropout_p
+            ctx.layout = "bshd"
+            ctx.block_m_dq_bwd = block_m_dq_bwd  
+            ctx.block_n_dq_bwd = block_n_dq_bwd  
+            ctx.block_m_dkv_bwd = block_m_dkv_bwd  
+            ctx.block_n_dkv_bwd = block_n_dkv_bwd  
+            ctx.quant_block_size = quant_block_size
+            
+            ctx.cu_seqlens_q = torch.tensor(0, device="cuda")
+            ctx.cu_seqlens_k = torch.tensor(0, device="cuda")
+            ctx.max_seqlens_q = q.shape[1]
+            ctx.max_seqlens_k = k.shape[1]
+
+        result = [output]
+        if return_lse:
+            result.append(softmax_lse)
+        if return_softmax:
+            result.append(exp_scores)
+        return result[0] if len(result) == 1 else tuple(result)
+
+    @staticmethod
+    def backward(ctx, do, *args):
+        (q, k, v, o, softmax_lse, alibi_slopes, bias, q_scale, k_scale, v_scale) = ctx.saved_tensors
+        assert bias is None, "Currently bias is not supported by fa backward function."
+        assert do.dtype is torch.bfloat16, f"do should be bfloat16 but get {do.dtype}"
+
+        dq, dk, dv = attention_triton_mxfp8_backward_triton_impl(
+            do=do,
+            q=q,
+            k=k,
+            v=v,
+            o=o,
+            softmax_lse=softmax_lse,
+            dq=None,
+            dk=None,
+            dv=None,
+            q_scale=q_scale,
+            k_scale=k_scale,
+            v_scale=v_scale,
+            sm_scale=ctx.sm_scale,
+            p_scale=ctx.p_scale,
+            alibi_slopes=alibi_slopes,
+            causal=ctx.causal,
+            window_size_left=-1,
+            window_size_right=-1,
+            cu_seqlens_q=ctx.cu_seqlens_q,
+            cu_seqlens_k=ctx.cu_seqlens_k,
+            max_seqlen_q=ctx.max_seqlens_q,
+            max_seqlen_k=ctx.max_seqlens_k,
+            use_mxfp8=ctx.use_mxfp8,
+            block_m_dq_bwd = ctx.block_m_dq_bwd,  
+            block_n_dq_bwd = ctx.block_n_dq_bwd,  
+            block_m_dkv_bwd = ctx.block_m_dkv_bwd,  
+            block_n_dkv_bwd = ctx.block_n_dkv_bwd,  
+            quant_block_size=ctx.quant_block_size,
+        )
+        return (
+            dq,
+            dk,
+            dv,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
+
 def attention(
     q,
     k,
@@ -276,7 +463,7 @@ def attention(
             return_attn_probs,
             torch.is_grad_enabled(),
             backend_type,
-            False,
+            None,
             cp_param_bundle["cp_group"],
             cp_param_bundle["cp_comm_type"],
         )
@@ -317,7 +504,7 @@ def attention(
         raise NotImplementedError(f"backend_type {backend_type} not supported")
 
 
-def attention_fp8_blockwise(
+def attention_fp8_quant(
     q,
     k,
     v,
@@ -332,8 +519,17 @@ def attention_fp8_blockwise(
     return_attn_probs=False,
     backend_type: str = "triton",  # for now 'triton' only
     cp_param_bundle=None,
+    # following parameters will be used in mxfp8
+    quant_type : Literal["fp8_blockwise", "mxfp8"] = "fp8_blockwise", # "fp8", "mxfp8"
+    block_m_fwd: int = 64,  # block of query seq len in fwd
+    block_n_fwd: int = 64,  # block of key/value seq len in fwd
+    block_m_dq_bwd: int = 64,  # block of dq seq len in bwd
+    block_n_dq_bwd: int = 64,  # block of dq seq len in bwd
+    block_m_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+    block_n_dkv_bwd: int = 64,  # block of dkv seq len in bwd
+    quant_block_size: int = 32
 ):
-    assert backend_type == "triton", "attention_fp8_blockwise only support triton backend"
+    assert backend_type == "triton", "attention_fp8 only support triton backend"
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
 
@@ -356,23 +552,59 @@ def attention_fp8_blockwise(
             return_attn_probs,
             torch.is_grad_enabled(),
             backend_type,
-            True,
+            quant_type,
             cp_param_bundle["cp_group"],
             cp_param_bundle["cp_comm_type"],
+            block_m_fwd=block_m_fwd,
+            block_n_fwd=block_n_fwd,
+            block_m_dq_bwd=block_m_dq_bwd,
+            block_n_dq_bwd=block_n_dq_bwd,
+            block_m_dkv_bwd=block_m_dkv_bwd,
+            block_n_dkv_bwd=block_n_dkv_bwd,
+            quant_block_size=quant_block_size
         )
 
-    return AttentionTritonFunction.apply(
-        q,
-        k,
-        v,
-        dropout_p,
-        softmax_scale,
-        causal,
-        window_size,
-        bias,
-        alibi_slopes,
-        return_lse,
-        return_attn_probs,
-        torch.is_grad_enabled(),
-        True,
-    )
+    if quant_type == "mxfp8":
+        print("Attention fp8 quant use AttentionTritonMXFP8Function class")
+        return AttentionTritonMXFP8Function.apply(
+            q,
+            k,
+            v,
+            dropout_p,
+            softmax_scale,
+            causal,
+            window_size,
+            bias,
+            alibi_slopes,
+            return_lse,
+            return_attn_probs,
+            torch.is_grad_enabled(),
+            True,
+            block_m_fwd,
+            block_n_fwd,
+            block_m_dq_bwd,
+            block_n_dq_bwd,
+            block_m_dkv_bwd,
+            block_n_dkv_bwd,
+            quant_block_size
+        )
+    elif quant_type == "fp8_blockwise":
+        return AttentionTritonFunction.apply(
+            q,
+            k,
+            v,
+            dropout_p,
+            softmax_scale,
+            causal,
+            window_size,
+            bias,
+            alibi_slopes,
+            return_lse,
+            return_attn_probs,
+            torch.is_grad_enabled(),
+            True,
+        )
+    else:
+        raise NotImplementedError(
+            f"not supported quant_type {quant_type} backend_type {backend_type} yet"
+        )

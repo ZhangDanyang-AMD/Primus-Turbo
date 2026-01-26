@@ -14,6 +14,7 @@ from tests.pytorch.ref.attention_ref import (
     attention_vanilla_forward_pytorch_ref_impl,
 )
 from tests.test_utils import compute_snr
+from typing import Literal, Optional
 
 test_cases_turbo = [
     AttnConfig(seqlen_q=4096, seqlen_kv=4096, num_head_q=32, num_head_kv=32, head_dim_qk=128, head_dim_v=128),
@@ -38,7 +39,15 @@ test_cases_flash_attn = [
 ]
 
 
-def bench_turbo_attention(batch, config, causal: bool, backend_type: str, use_fp8: bool, test_backward: bool):
+def bench_turbo_attention(batch, 
+                        config, 
+                        causal: bool, 
+                        backend_type: str, 
+                        quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]], 
+                        test_backward: bool,
+                        block_m: int = 64, 
+                        block_n: int = 64, 
+                        quant_block_size: int = 32):
     device = "cuda"
     dtype = torch.bfloat16
     seqlen_q, seqlen_kv, num_head_q, num_head_kv, head_dim_qk, head_dim_v = (
@@ -63,7 +72,7 @@ def bench_turbo_attention(batch, config, causal: bool, backend_type: str, use_fp
     sm_scale = query.shape[-1] ** (-0.5)
 
     o_ref = attention_vanilla_forward_pytorch_ref_impl(query_ref, key_ref, value_ref, sm_scale, causal)
-    if use_fp8 == False:
+    if quant_type is None:
         fn_forward = lambda: pt.ops.attention(
             query,
             key,
@@ -80,7 +89,7 @@ def bench_turbo_attention(batch, config, causal: bool, backend_type: str, use_fp
             backend_type=backend_type,
         )
     else:
-        fn_forward = lambda: pt.ops.attention_fp8_blockwise(
+        fn_forward = lambda: pt.ops.attention_fp8_quant(
             query,
             key,
             value,
@@ -94,6 +103,14 @@ def bench_turbo_attention(batch, config, causal: bool, backend_type: str, use_fp
             return_lse=False,
             return_attn_probs=False,
             backend_type=backend_type,
+            quant_type=quant_type,
+            block_m_fwd=block_m,
+            block_n_fwd=block_n,
+            block_m_dq_bwd=block_m,
+            block_n_dq_bwd=block_n,
+            block_m_dkv_bwd=block_m,
+            block_n_dkv_bwd=block_n,
+            quant_block_size=quant_block_size,
         )
 
     # Forward pass
@@ -153,7 +170,15 @@ def bench_turbo_attention(batch, config, causal: bool, backend_type: str, use_fp
     return mean_time_ms, flops_per_sec, total_flops
 
 
-def bench_flash_attention(batch, config, causal: bool, backend_type: str, use_fp8: bool, test_backward: bool):
+def bench_flash_attention(batch, 
+                          config, 
+                          causal: bool, 
+                          backend_type: str, 
+                          quant_type: Optional[Literal["fp8_blockwise", "mxfp8"]], 
+                          test_backward: bool,
+                          block_m: int = 64, 
+                          block_n: int = 64, 
+                          quant_block_size: int = 32):
     device = "cuda"
     dtype = torch.bfloat16
     seqlen_q, seqlen_kv, num_head_q, num_head_kv, head_dim_qk, head_dim_v = (
@@ -240,7 +265,10 @@ if __name__ == "__main__":
                 "Test id",
                 "Causal",
                 "Backend",
-                "FP8",
+                "Quant_type",
+                "Block_M",
+                "Block_N",
+                "quant_block_size",
                 "Test Backward",
                 "num_head_q",
                 "num_head_kv",
@@ -264,8 +292,11 @@ if __name__ == "__main__":
                         config=test_case,
                         causal=config["causal"],
                         backend_type=config["backend"],
-                        use_fp8=config["fp8"],
+                        quant_type=config["quant_type"],
                         test_backward=config["test_backward"],
+                        block_m=config["block_m"],
+                        block_n=config["block_n"],
+                        quant_block_size=config["quant_block_size"],
                     )
 
                     # Add to results table
@@ -273,7 +304,10 @@ if __name__ == "__main__":
                         "Test id": test_id,
                         "Causal": config["causal"],
                         "Backend": config["backend"],
-                        "FP8": config["fp8"],
+                        "Quant_type": config["quant_type"],
+                        "Block_M": config["block_m"],
+                        "Block_N": config["block_n"],
+                        "quant_block_size": config["quant_block_size"],
                         "Test Backward": config["test_backward"],
                         "Time (ms)": f"{time_ms:.2f}",
                         "TFLOPS": f"{tflops:.2f}",
@@ -290,7 +324,10 @@ if __name__ == "__main__":
                         "Test id": test_id,
                         "Causal": config["causal"],
                         "Backend": config["backend"],
-                        "FP8": config["fp8"],
+                        "Quant_type": config["quant_type"],
+                        "Block_M": config["block_m"],
+                        "Block_N": config["block_n"],
+                        "quant_block_size": config["quant_block_size"],
                         "Test Backward": config["test_backward"],
                         "Time (ms)": "Failed",
                         "TFLOPS": "N/A",
@@ -305,14 +342,32 @@ if __name__ == "__main__":
 
     # Define test configurations
     test_configs_turbo = [
-        {"causal": False, "backend": "ck", "fp8": False, "test_backward": False},
-        {"causal": True, "backend": "ck", "fp8": False, "test_backward": False},
-        {"causal": False, "backend": "ck", "fp8": False, "test_backward": True},
-        {"causal": True, "backend": "ck", "fp8": False, "test_backward": True},
-        {"causal": False, "backend": "triton", "fp8": True, "test_backward": False},
-        {"causal": True, "backend": "triton", "fp8": True, "test_backward": False},
-        {"causal": False, "backend": "triton", "fp8": True, "test_backward": True},
-        {"causal": True, "backend": "triton", "fp8": True, "test_backward": True},
+        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        
+        {"causal": False, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": False, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "triton", "quant_type": "fp8_blockwise", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 32},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 32},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 32},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 32},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 64},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 64, "block_n": 64, "quant_block_size": 64},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 64},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 64, "block_n": 64, "quant_block_size": 64},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 128, "block_n": 128, "quant_block_size": 64},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": False, "block_m": 128, "block_n": 128, "quant_block_size": 64},
+        {"causal": False, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 128, "block_n": 128, "quant_block_size": 64},
+        {"causal": True, "backend": "triton", "quant_type": "mxfp8", "test_backward": True, "block_m": 128, "block_n": 128, "quant_block_size": 64},
     ]
     # Run benchmarks with bench_turbo_attention
     aiter_results = run_benchmark(bench_turbo_attention, test_cases_turbo, test_configs_turbo)
@@ -322,10 +377,10 @@ if __name__ == "__main__":
     print("AITer results saved to aiter_attention_benchmark_results.csv")
 
     test_configs_flash_attn = [
-        {"causal": False, "backend": "ck", "fp8": False, "test_backward": False},
-        {"causal": True, "backend": "ck", "fp8": False, "test_backward": False},
-        {"causal": False, "backend": "ck", "fp8": False, "test_backward": True},
-        {"causal": True, "backend": "ck", "fp8": False, "test_backward": True},
+        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": False, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": False, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
+        {"causal": True, "backend": "ck", "quant_type": None, "test_backward": True, "block_m": 32, "block_n": 32, "quant_block_size": 32},
     ]
     # Run benchmarks with bench_flash_attention
     flash_results = run_benchmark(bench_flash_attention, test_cases_flash_attn, test_configs_flash_attn)

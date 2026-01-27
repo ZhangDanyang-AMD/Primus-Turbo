@@ -570,7 +570,6 @@ def attention_fp8_quant(
         )
 
     if quant_type == "mxfp8":
-        print("Attention fp8 quant use AttentionTritonMXFP8Function class")
         return AttentionTritonMXFP8Function.apply(
             q,
             k,

@@ -143,8 +143,6 @@ def block_scaling_node_mxfp8(
 def quant_p_scale_mxfp8():
     mxfp8_fw = get_f8_fwd_dtype()
     p_scale = torch.finfo(mxfp8_fw).max
-    print("p_scale", bin(int(p_scale)))
-    print("p_scale", int(p_scale))
     if mxfp8_fw == torch.float8_e4m3fn:
         mask_s = 0b1111
         mbits = 3

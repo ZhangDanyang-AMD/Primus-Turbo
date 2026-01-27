@@ -1857,11 +1857,11 @@ def _bwd_kernel_dkdv_mxfp8(
 
     dk_mask = mask_n[:, None] & mask_d_qk[None, :]
     dk_ptrs = dk_offset + offs_n[:, None] * stride_kn + offs_d_qk[None, :] * stride_kk
-    tl.store(dk_ptrs, dk, mask=dk_mask)
+    tl.store(dk_ptrs, dk.to(DK.type.element_ty), mask=dk_mask)
 
     dv_mask = mask_n[:, None] & mask_d_v[None, :]
     dv_ptrs = dv_offset + offs_n[:, None] * stride_vn + offs_d_v[None, :] * stride_vk
-    tl.store(dv_ptrs, dv, mask=dv_mask)
+    tl.store(dv_ptrs, dv.to(DV.type.element_ty), mask=dv_mask)
 
 
 @triton.jit
@@ -2438,4 +2438,4 @@ def _bwd_kernel_dq_mxfp8(
         p_scale_t = 1.0
     dq_ptrs = dq_offset + offs_m[:, None] * stride_qm + offs_d_qk[None, :] * stride_qk
     dq *= sm_scale / p_scale_t
-    tl.store(dq_ptrs, dq, mask=mask_q)
+    tl.store(dq_ptrs, dq.to(DQ.type.element_ty), mask=mask_q)

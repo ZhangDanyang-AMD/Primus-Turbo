@@ -9,6 +9,7 @@ import math
 import torch
 import triton
 import triton.language as tl
+import torch.distributed as dist
 
 _torch_custom_op_wrapper = torch.library.custom_op
 from typing import Optional, Tuple
@@ -41,7 +42,7 @@ from primus_turbo.triton.attention.mxfp8_attention_kernel import (
 )
 
 fwd_torch_dtype: tl.constexpr = torch.bfloat16
-bwd_torch_dtype: tl.constexpr = torch.float32
+bwd_torch_dtype: tl.constexpr = torch.bfloat16
 
 
 def get_f8_fwd_dtype():
@@ -794,7 +795,7 @@ def attention_mxfp8_forward_triton_impl(
     use_exp2 = True
     quant_size: int = 32
 
-    if DEBUG:
+    if DEBUG and (not dist.is_initialized() or dist.get_rank()==0):
         print()
         print("attention_forward_triton_impl")
         print("q:", q, q.shape)
@@ -1077,7 +1078,7 @@ def attention_triton_mxfp8_backward_triton_impl(
     do = do.contiguous()
     quant_size: int = 32
 
-    if DEBUG:
+    if DEBUG and (not dist.is_initialized() or dist.get_rank()==0):
         print("####################################################")
         print("attention_backward_triton_new_impl")
         print("do:", do, do.shape)
@@ -1265,7 +1266,7 @@ def attention_triton_mxfp8_backward_triton_impl(
         QUANT_BLOCK_SIZE=quant_block_size,
     )
 
-    if DEBUG:
+    if DEBUG and (not dist.is_initialized() or dist.get_rank()==0):
         print("####################################################")
         print("_bwd_kernel inputs")
         print("do:", do, do.shape)
@@ -1305,8 +1306,6 @@ def attention_triton_mxfp8_backward_triton_impl(
 
     p_scale_t = math.pow(2.0, int(p_scale - 127))
     log_p_scale = math.log(p_scale_t)
-
-    print("log_p_scale", log_p_scale)
 
     wrap_triton(_bwd_kernel_dq_mxfp8)[grid_bwd](
         q,
@@ -1472,20 +1471,18 @@ def attention_triton_mxfp8_backward_triton_impl(
         **kernel_kwargs,
     )
 
-    if DEBUG:
+    if DEBUG and (not dist.is_initialized() or dist.get_rank()==0):
         print("####################################################")
-        print("_bwd_kernel outputs")
-        print("dq:", dq, dq.shape)
-        print("dk:", dk, dk.shape)
-        print("dv:", dv, dv.shape)
-        # print("delta:", delta, delta.shape)
+        print("_bwd_kernel scales")
+        print("q_scale:", q_scale, q_scale.shape, q_scale.dtype)
+        print("k_scale:", k_scale, k_scale.shape, k_scale.dtype)
+        print("v_scale:", v_scale, v_scale.shape, v_scale.dtype)
 
-    if DEBUG:
         print("####################################################")
         print("attention_prefill_backward_triton_new_impl outputs")
-        print("dq:", dq, dq.shape)
-        print("dk:", dk, dk.shape)
-        print("dv:", dv, dv.shape)
+        print("dq:", dq, dq.shape, dq.dtype)
+        print("dk:", dk, dk.shape, dk.dtype)
+        print("dv:", dv, dv.shape, dv.dtype)
         print("copy_back:", copy_back)
         # print("delta:", delta, delta.shape)
 

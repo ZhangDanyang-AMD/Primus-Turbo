@@ -28,11 +28,10 @@ philox_offset: tl.constexpr = 0x1D4B42
 AUTOTUNE = os.environ.get("PRIMUS_TURBO_TRITON_AMD_AUTOTUNE", "0").lower() in ("1", "true", "yes")
 DEBUG = os.environ.get("PRIMUS_TURBO_ATTENTION_TRITON_AMD_DEBUG", "0").lower() in ("1", "true", "yes")
 PERF = os.environ.get("PRIMUS_TURBO_ATTENTION_TRITON_AMD_PERF", "0").lower() in ("1", "true", "yes")
+USE_FP8E5M2_BWD = os.environ.get("PRIMUS_TURBO_ATTENTION_USE_FP8E5M2_BWD", "0").lower() in ("1", "true", "yes")
 
 FIXED_BLOCK_M = 64
 FIXED_BLOCK_N = 64
-USE_FP8E5M2_BWD = False
-
 
 def get_shape_from_layout(
     q, k, v, layout, cu_seqlens_q=None, cu_seqlens_k=None, max_seqlen_q=None, max_seqlen_k=None

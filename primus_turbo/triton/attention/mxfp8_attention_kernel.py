@@ -1169,7 +1169,7 @@ def _bwd_preprocess_use_o_mxfp8(
             QUANT_BLOCK_SIZE,
             True,
             False,
-            True,
+            USE_ASM,
             F8_BWD_DTYPE,
         )
 
@@ -1269,6 +1269,13 @@ def _attn_bwd_dkdv(
     else:
         USE_ASM: tl.constexpr = False
 
+    if F8_BWD_DTYPE == tl.float8e4nv:
+        DO_USE_ASM: tl.constexpr = True
+        DO_DTYPE: tl.constexpr = "e4m3"
+    else:
+        DO_USE_ASM: tl.constexpr = False
+        DO_DTYPE: tl.constexpr = "e5m2"
+
     if scales_num_block_m == 1 and scales_num_block_d_qk == 1:
         TRANS_Q_SCALE_BLK: tl.constexpr = False
     else:
@@ -1363,7 +1370,7 @@ def _attn_bwd_dkdv(
                 dp = tl.dot_scaled(
                     do,
                     blk_do_scale_1d_ds.to(tl.uint8),
-                    FLOAT_DTYPE,
+                    DO_DTYPE,
                     v,
                     v_scale.to(tl.uint8),
                     FLOAT_DTYPE,
@@ -1371,7 +1378,7 @@ def _attn_bwd_dkdv(
                 )
             else:
                 do_descaled = _unpack_fp8(
-                    do, blk_do_scale_2d, tl.float32, BLOCK_M, BLOCK_DMODEL_V, QUANT_BLOCK_SIZE, True, USE_ASM
+                    do, blk_do_scale_2d, tl.float32, BLOCK_M, BLOCK_DMODEL_V, QUANT_BLOCK_SIZE, True, DO_USE_ASM
                 )
                 v_descaled = _unpack_fp8(
                     v, v_scale, tl.float32, BLOCK_DMODEL_V, BLOCK_N, QUANT_BLOCK_SIZE, True, USE_ASM
@@ -1392,7 +1399,7 @@ def _attn_bwd_dkdv(
                     FLOAT_DTYPE,
                     do,
                     blk_do_scale_1d_ds_T,
-                    FLOAT_DTYPE,
+                    DO_DTYPE,
                     dv,
                     out_dtype=tl.float32,
                 )
@@ -1406,7 +1413,7 @@ def _attn_bwd_dkdv(
                         BLOCK_DMODEL_V,
                         QUANT_BLOCK_SIZE,
                         True,
-                        USE_ASM,
+                        DO_USE_ASM,
                     )
                 dv += tl.dot(tl.trans(p), do_descaled, out_dtype=tl.float32, allow_tf32=False)
 
@@ -1418,7 +1425,7 @@ def _attn_bwd_dkdv(
         if use_mxfp8:
             if (SCALE_NUM_PER_M) % 2 == 0:
                 ds_T = ds.T
-                ds_scale = _calculate_scales(ds_T, BLOCK_N, BLOCK_M, QUANT_SIZE, False, F8_BWD_DTYPE)
+                ds_scale = _calculate_scales(ds_T, BLOCK_N, BLOCK_M, QUANT_SIZE, False, q.dtype)
 
                 ds_scalsed = _pack_fp8(
                     ds_T,
@@ -1431,7 +1438,7 @@ def _attn_bwd_dkdv(
                     False,
                     False,
                     USE_ASM,
-                    F8_BWD_DTYPE,
+                    q.dtype,
                 )
                 dk = tl.dot_scaled(
                     ds_scalsed,
@@ -1925,6 +1932,13 @@ def _attn_bwd_dq(
     else:
         USE_ASM: tl.constexpr = False
 
+    if F8_BWD_DTYPE == tl.float8e4nv:
+        DO_USE_ASM: tl.constexpr = True
+        DO_DTYPE: tl.constexpr = "e4m3"
+    else:
+        DO_USE_ASM: tl.constexpr = False
+        DO_DTYPE: tl.constexpr = "e5m2"
+
     if use_mxfp8:
         do_scale = do_scale.to(tl.uint8)
 
@@ -2012,7 +2026,7 @@ def _attn_bwd_dq(
                 dp = tl.dot_scaled(
                     do,
                     do_scale.to(tl.uint8),
-                    FLOAT_DTYPE,
+                    DO_DTYPE,
                     v,
                     blk_v_scale.to(tl.uint8),
                     FLOAT_DTYPE,
@@ -2020,7 +2034,7 @@ def _attn_bwd_dq(
                 )
             else:
                 do_descaled = _unpack_fp8(
-                    do, do_scale, tl.float32, BLOCK_M, BLOCK_DMODEL_V, QUANT_BLOCK_SIZE, True, USE_ASM
+                    do, do_scale, tl.float32, BLOCK_M, BLOCK_DMODEL_V, QUANT_BLOCK_SIZE, True, DO_USE_ASM
                 )
                 v_descaled = _unpack_fp8(
                     v, blk_v_scale, tl.float32, BLOCK_DMODEL_V, BLOCK_N, QUANT_BLOCK_SIZE, True, USE_ASM
@@ -2034,7 +2048,7 @@ def _attn_bwd_dq(
         if use_mxfp8:
             if (SCALE_NUM_PER_N) % 2 == 0:
                 blk_k_scale = tl.load(k_scale_ptr_1d_ds_base_T)
-                ds_scale = _calculate_scales(ds, BLOCK_M, BLOCK_N, QUANT_SIZE, False, F8_BWD_DTYPE)
+                ds_scale = _calculate_scales(ds, BLOCK_M, BLOCK_N, QUANT_SIZE, False, q.dtype)
                 ds = _pack_fp8(
                     ds,
                     ds_scale,
@@ -2046,7 +2060,7 @@ def _attn_bwd_dq(
                     False,
                     False,
                     USE_ASM,
-                    F8_BWD_DTYPE,
+                    q.dtype,
                 )
 
                 dq = tl.dot_scaled(

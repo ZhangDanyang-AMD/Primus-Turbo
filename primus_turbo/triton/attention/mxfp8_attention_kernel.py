@@ -1368,7 +1368,7 @@ def _attn_bwd_dkdv(
         if use_mxfp8:
             if (SCALE_NUM_PER_D_V) % 2 == 0:
                 dp = tl.dot_scaled(
-                    do,
+                    do.to(F8_BWD_DTYPE),
                     blk_do_scale_1d_ds.to(tl.uint8),
                     DO_DTYPE,
                     v,

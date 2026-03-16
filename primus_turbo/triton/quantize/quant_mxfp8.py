@@ -194,6 +194,7 @@ def _pack_fp8(
             y0 = (y & 0x00FF).to(tl.uint8).to(float8_dtype, bitcast=True)
             y = tl.join(y0, y1).reshape(BLOCK_M, BLOCK_N)
         y = y.to(tl.float32)
+        # need check if it can be deleted
         mask_pos = (y != y) & (x > 0)
         mask_neg = (y != y) & (x < 0)
         y = tl.where(mask_neg, -max_pos, y)

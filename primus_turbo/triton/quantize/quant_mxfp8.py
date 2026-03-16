@@ -108,9 +108,9 @@ def _pack_fp8(
 
     scales = tl.where(scales < 1, 1, scales)
     scales_fp32 = (scales.to(tl.uint32) << 23).to(tl.float32, bitcast=True)
-    F32_MIN_NORMAL = tl.constexpr(2**-126)
-    min_frag = (F32_MIN_NORMAL).to(tl.float32)
-    scales_fp32 = tl.where(scales_fp32 < min_frag, min_frag, scales_fp32)
+    # F32_MIN_NORMAL = tl.constexpr(2**-126)
+    # min_frag = (F32_MIN_NORMAL).to(tl.float32)
+    # scales_fp32 = tl.where(scales_fp32 < min_frag, min_frag, scales_fp32)
 
     if IS_2D_BLOCK:
         # scales_fp32: [SCALE_BLOCK_M, SCALE_BLOCK_N]

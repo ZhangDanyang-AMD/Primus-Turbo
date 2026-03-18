@@ -244,7 +244,10 @@ class AttentionTritonFunction(torch.autograd.Function):
 
         return dq, dk, dv, None, None, None, None, None, None, None, None, None, None
 
-
+# Note:
+# MXFP8 converges when
+# block_m_fwd == block_n_fwd == block_m_dq_bwd == block_n_dq_bwd == block_m_dkv_bwd == block_n_dkv_bwd == 128
+# and quant_block_size == 128.
 class AttentionTritonMXFP8Function(torch.autograd.Function):
     @staticmethod
     def forward(
